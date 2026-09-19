@@ -92,6 +92,13 @@ def parser() -> argparse.ArgumentParser:
     tag.add_argument("--category", help="Match Financy's category label")
     tag.add_argument("--subcategory", help="Match Financy's subcategory label")
     tag.add_argument(
+        "--amount", help="Match Financy's exact signed amount, e.g. -700"
+    )
+    tag.add_argument(
+        "--general-category",
+        help="Report category for an expense rule, e.g. פנאי or אחר",
+    )
+    tag.add_argument(
         "--note", default="", help="Local reminder of why, never sent anywhere"
     )
     tag.add_argument("--priority", type=int, default=0)
@@ -314,6 +321,8 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                         record_id=args.record_id,
                         category=args.category,
                         subcategory=args.subcategory,
+                        general_category=args.general_category,
+                        amount=args.amount,
                         note=args.note,
                         priority=args.priority,
                     )
