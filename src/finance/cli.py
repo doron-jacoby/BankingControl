@@ -227,6 +227,7 @@ def live_command(command: str) -> int:
             {
                 "status": "failed",
                 "error": error.code,
+                "detail": error.detail,
                 "message": "Run finance connect locally. Check Financy Settings -> API, plan and bank connection.",
             }
         )

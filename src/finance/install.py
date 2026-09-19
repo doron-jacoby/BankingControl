@@ -196,8 +196,13 @@ def main(argv: list[str] | None = None) -> int:
             "plan": "API access is unavailable on your Financy plan. Check your plan in Financy.",
             "forbidden": "Access denied. Check API permissions in Financy.",
             "transient": "Financy is temporarily unavailable. Check your connection and retry.",
-        }.get(error.code, "Could not verify Financy. Check Settings -> API and retry.")
+        }.get(
+            error.code,
+            "Financy verification failed. Share the diagnostic below to investigate.",
+        )
         print(f"⚠ {guidance}")
+        if error.detail:
+            print(f"   {error.detail}")
         return 1
     except (SecretError, StorageError, OSError, ValueError, RuntimeError):
         print(

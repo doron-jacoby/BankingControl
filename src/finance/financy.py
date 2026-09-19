@@ -8,8 +8,12 @@ does not guess a FinanceProvider transaction mapping.
 import getpass
 import http.client
 import json
+import os
 import sys
+import termios
 import time
+import tty
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -26,7 +30,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class FinancyError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, detail: str = "") -> None:
         self.code = (
             code
             if code
@@ -40,6 +44,8 @@ class FinancyError(RuntimeError):
             }
             else "validation"
         )
+        # Only locally authored diagnostics, never API bodies or credential values.
+        self.detail = detail
         super().__init__(self.code)
 
 
@@ -106,40 +112,46 @@ def https_request(
         response = connection.getresponse()
         data = response.read(MAX_RESPONSE_BYTES + 1)
         if len(data) > MAX_RESPONSE_BYTES:
-            raise FinancyError("validation")
+            raise FinancyError("validation", detail=f"{route}: response too large")
         try:
             parsed = json.loads(data, parse_float=Decimal)
         except (ValueError, UnicodeError):
             if response.status != 200:
                 return response.status, {}
-            raise FinancyError("validation") from None
+            raise FinancyError(
+                "validation", detail=f"{route}: HTTP 200, invalid JSON"
+            ) from None
         if not isinstance(parsed, dict):
-            raise FinancyError("validation")
+            raise FinancyError("validation", detail=f"{route}: expected a JSON object")
         return response.status, parsed
     except (OSError, http.client.HTTPException):
-        raise FinancyError("transient") from None
+        raise FinancyError(
+            "transient", detail=f"{route}: network or TLS connection failed"
+        ) from None
     finally:
         connection.close()
 
 
-def check_response(status: int, body: dict[str, Any]) -> None:
+def check_response(status: int, body: dict[str, Any], route: str = "API") -> None:
     if status == 200:
         return
+    detail = f"{route}: HTTP {status}"
     if status == 401:
-        raise FinancyError("authentication")
+        raise FinancyError("authentication", detail=detail)
     if status == 403:
         raise FinancyError(
-            "plan" if body.get("type") == "NOT_AVAILABLE_ON_PLAN" else "forbidden"
+            "plan" if body.get("type") == "NOT_AVAILABLE_ON_PLAN" else "forbidden",
+            detail=detail,
         )
     if status == 429 or status >= 500 or body.get("type") == "PROVIDER_UNAVAILABLE":
-        raise FinancyError("transient")
-    raise FinancyError("validation")
+        raise FinancyError("transient", detail=detail)
+    raise FinancyError("validation", detail=detail)
 
 
 def required_text(row: dict[str, Any], name: str) -> str:
     value = row.get(name)
     if not isinstance(value, str) or not value or len(value) > 8192:
-        raise FinancyError("validation")
+        raise FinancyError("validation", detail=f"Missing or invalid {name} field")
     return value
 
 
@@ -156,20 +168,30 @@ class FinancyClient:
         status, body = self._transport(
             "POST", "/oauth/token", self._credentials.payload(), None
         )
-        check_response(status, body)
+        check_response(status, body, "/oauth/token")
         token = required_text(body, "accessToken")
         expiry = body.get("expiresIn")
+        if body.get("tokenType") != "Bearer" or "\n" in token or "\r" in token:
+            raise FinancyError(
+                "validation",
+                detail="/oauth/token: invalid accessToken or tokenType field",
+            )
         if (
-            body.get("tokenType") != "Bearer"
-            or "\n" in token
-            or "\r" in token
-            or isinstance(expiry, bool)
+            isinstance(expiry, bool)
             or not isinstance(expiry, int | Decimal)
-            or not 0 < expiry <= 31_536_000
+            or (isinstance(expiry, Decimal) and not expiry.is_finite())
+            or expiry <= 0
         ):
-            raise FinancyError("validation")
+            raise FinancyError(
+                "validation", detail="/oauth/token: invalid expiresIn field"
+            )
         self._token = token
-        self._expires_at = time.monotonic() + float(expiry) * 0.9
+        # The OpenAPI reference specifies milliseconds; the guide's example is
+        # ambiguous. Using milliseconds also safely renews a seconds-based token
+        # early, without inspecting or logging its contents. Cap caching at a day.
+        self._expires_at = (
+            time.monotonic() + float(min(expiry, 86_400_000)) / 1000 * 0.9
+        )
 
     def _pages(self, path: str) -> list[dict[str, Any]]:
         from urllib.parse import urlencode
@@ -192,18 +214,22 @@ class FinancyClient:
             if status == 401:
                 self._authenticate()
                 status, body = self._transport("GET", route, None, self._token)
-            check_response(status, body)
+            check_response(status, body, path)
             items = body.get("items")
             if not isinstance(items, list) or any(
                 not isinstance(item, dict) for item in items
             ):
-                raise FinancyError("validation")
+                raise FinancyError(
+                    "validation", detail=f"{path}: missing or invalid items list"
+                )
             result.extend(items)
             cursor = body.get("nextPage")
             if cursor is None or cursor == "":
                 return result
             if not isinstance(cursor, str) or cursor in seen or len(seen) >= 10_000:
-                raise FinancyError("validation")
+                raise FinancyError(
+                    "validation", detail=f"{path}: invalid pagination cursor"
+                )
             seen.add(cursor)
 
     def list_accounts(self) -> list[Account]:
@@ -213,12 +239,15 @@ class FinancyClient:
             "LOAN": "loan",
             "SAVINGS": "savings",
             "SECURITY": "investment",
+            "SECURITIES": "investment",
         }
         result = []
         for row in self._pages("/v2/data/accounts"):
             kind = required_text(row, "accountType")
             if kind not in types:
-                raise FinancyError("validation")
+                raise FinancyError(
+                    "validation", detail="/v2/data/accounts: unsupported accountType"
+                )
             institution = required_text(row, "providerId")
             result.append(
                 Account(
@@ -247,6 +276,48 @@ class FinancyClient:
         }
 
 
+def masked_input(prompt: str) -> str:
+    """Echo only stars; never fall back to unmasked terminal input."""
+    try:
+        if sys.version_info >= (3, 14):
+            reader: Callable[..., str] = getpass.getpass
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                return reader(prompt, echo_char="*")
+        # Python 3.12/3.13 do not have getpass(echo_char=...).
+        descriptor = os.open("/dev/tty", os.O_RDWR)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as terminal:
+            original = termios.tcgetattr(descriptor)
+            chars: list[str] = []
+            try:
+                tty.setcbreak(descriptor)
+                os.write(descriptor, prompt.encode())
+                while True:
+                    char = terminal.read(1)
+                    if char in {"\n", "\r"}:
+                        return "".join(chars)
+                    if char in {"", "\x04"}:
+                        raise EOFError
+                    if char == "\x03":
+                        raise KeyboardInterrupt
+                    if char in {"\x7f", "\b", "\x15"}:
+                        count = len(chars) if char == "\x15" else min(1, len(chars))
+                        if count:
+                            del chars[-count:]
+                            os.write(descriptor, b"\b \b" * count)
+                    else:
+                        chars.append(char)
+                        os.write(descriptor, b"*")
+            finally:
+                termios.tcsetattr(descriptor, termios.TCSAFLUSH, original)
+                os.write(descriptor, b"\n")
+    except (OSError, termios.error, getpass.GetPassWarning):
+        raise FinancyError(
+            "validation",
+            detail="Masked input unavailable. Run setup in an interactive terminal.",
+        ) from None
+
+
 def connect_interactively(
     store: SecretStore,
     *,
@@ -256,15 +327,15 @@ def connect_interactively(
     if read_secret is None:
         if not sys.stdin.isatty():
             raise FinancyError("validation")
-        read_secret = getpass.getpass
+        read_secret = masked_input
     print(
         "\n🔑 Financy -> Settings -> scroll to the bottom -> API credentials.\n"
         "Use each field's copy button to get the full value.\n"
-        "Paste, then Enter: input is hidden; a prefix and character count confirm receipt.\n"
+        "Paste each value, then Enter. You'll see * as you type or paste.\n"
         "Verified credentials will be saved in macOS Keychain."
     )
 
-    def read(label: str) -> str:
+    def read(label: str, expected_length: int | None = None) -> str:
         while True:
             value = read_secret(f"{label}: ").strip()
             if not value or len(value) > 8192 or not value.isprintable():
@@ -272,24 +343,30 @@ def connect_interactively(
                     "⚠ Empty or invalid value. Copy the full credential and try again."
                 )
                 continue
-            # Never reveal a whole short credential, or terminal control characters.
-            prefix = value[: min(8, len(value) // 2)]
-            print(f"✓ {label}: {prefix}•••••••• ({len(value)} characters)")
+            if expected_length is not None and len(value) != expected_length:
+                print(
+                    f"⚠ Expected {expected_length} characters. Copy the full field and try again."
+                )
+                continue
             return value
 
+    user_id = read("[1/3] User ID")
     credentials = Credentials(
-        clientId=read("[1/3] Client ID"),
-        clientSecret=read("[2/3] Client secret"),
-        userId=read("[3/3] User ID"),
+        userId=user_id,
+        clientId=read("[2/3] Client ID", 32),
+        clientSecret=read("[3/3] Client secret", 64),
     )
     print("⏳ Checking API access and linked accounts…")
     client = FinancyClient(credentials, transport)
     summary = client.connection_summary()
+    print("✓ API access verified.")
     discovered = client.list_accounts()
     # One Keychain item avoids partially updating three separate credentials.
     store.set_password(SERVICE, CREDENTIAL_NAME, json.dumps(credentials.payload()))
     if Credentials.load(store) != credentials:
-        raise FinancyError("validation")
+        raise FinancyError(
+            "validation", detail="Keychain: saved credentials could not be verified"
+        )
     return {
         "provider": "financy",
         "status": "connected" if discovered else "no_linked_accounts",

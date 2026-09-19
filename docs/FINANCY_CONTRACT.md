@@ -34,7 +34,7 @@ Financy CLI is not required; its file-based credential storage is not used.
 3. Add the intended bank/card through Financy and complete its hosted bank
    consent journey. Connections cannot be created through this API. Follow the
    actual bank screens rather than guessed Bank Leumi button names.
-4. Run `./install.sh`, select option 2, and enter credentials only into its hidden
+4. Run `./install.sh`, select option 2, and enter credentials only into its masked
    local prompts. Alternatively run the installed `finance connect` command.
 5. Use `finance accounts` and `finance status` for local account discovery and
    readiness checks. This setup does not initialize a live transaction database
@@ -43,10 +43,20 @@ Financy CLI is not required; its file-based credential storage is not used.
 The user confirmed that the `clientId`, `clientSecret` and `userId` fields are
 at the bottom of Settings. Use each field's copy button for the full value.
 An API availability badge only indicates plan access.
-Terminal input is hidden; after Enter, the installer displays a masked prefix
-(up to eight characters, never more than half the value) and the character count.
-These previews are local terminal output, not worker logs. Full credentials
-are verified before being stored in macOS Keychain.
+The installer follows the site's order: User ID, Client ID, Client secret.
+Input appears as `*` while typing or pasting; no prefixes or counts are printed.
+The user-confirmed field lengths are checked locally: 32 for Client ID, 64 for
+Client secret, and no fixed length for User ID. Full credentials are verified
+before being stored in macOS Keychain.
+
+The token reference describes `expiresIn` in milliseconds, while the guide
+shows `86400` without specifying units. The client uses milliseconds and caps
+its in-memory cache at one day. If a deployment returns seconds, it renews
+early; a rejected token also triggers one renewal. A millisecond lifetime of
+`86400000` previously exceeded the client's seconds-based upper bound and
+caused a generic validation error. This is fixed and covered by regression
+tests. Diagnostics now include the endpoint and HTTP status for HTTP failures,
+or the unexpected response field/shape, never raw response bodies or tokens.
 
 ## Transaction import gaps
 
