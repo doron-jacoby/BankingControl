@@ -135,6 +135,7 @@ class FinancyTests(unittest.TestCase):
         self.assertEqual(summary["connections_requiring_attention"], 1)
         self.assertEqual(Credentials.load(store), CREDS)
         self.assertNotIn(CREDS.clientSecret, stream.getvalue())
+        self.assertIn("syntheti•••••••• (16 characters)", stream.getvalue())
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(FinancyError):
             connect_interactively(
                 store,
@@ -142,6 +143,25 @@ class FinancyTests(unittest.TestCase):
                 transport=FakeTransport([(401, {})]),
             )
         self.assertEqual(Credentials.load(store), CREDS)
+
+    def test_short_credentials_are_masked_and_invalid_pastes_are_retried(self) -> None:
+        store = FakeSecretStore()
+        stream = io.StringIO()
+        transport = FakeTransport([token(), (200, {"items": []}), account_page()])
+        with contextlib.redirect_stdout(stream):
+            connect_interactively(
+                store,
+                read_secret=Mock(side_effect=["", "\x1b[31m", " abcd ", "xy", "z"]),
+                transport=transport,
+            )
+        self.assertEqual(Credentials.load(store), Credentials("abcd", "xy", "z"))
+        output = stream.getvalue()
+        self.assertIn("ab•••••••• (4 characters)", output)
+        self.assertIn("x•••••••• (2 characters)", output)
+        self.assertIn("[3/3] User ID: •••••••• (1 characters)", output)
+        self.assertNotIn("abcd", output)
+        self.assertNotIn("xy", output)
+        self.assertNotIn("\x1b", output)
 
     def test_noninteractive_setup_never_falls_back_to_echoed_secret_input(self) -> None:
         with (

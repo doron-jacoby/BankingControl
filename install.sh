@@ -33,10 +33,8 @@ if [[ "${1:-}" == "--check" ]]; then
     exit 0
 fi
 
-echo "This wizard installs an isolated runtime and guides you through setup."
-echo "Choose a complete demo or connect Financy for live account discovery."
-read -r -p "Install Python packages in your local PersonalFinance directory? [y/N] " reply
-case "$reply" in y|Y|yes) ;; *) exit 1 ;; esac
+echo "💰 Personal Finance setup"
+echo "⏳ Installing app packages…"
 
 if [[ -L "$finance_root" || -L "$finance_root/runtime" ]]; then
     echo "The installation directory must not be a symbolic link."
@@ -47,5 +45,5 @@ chmod 700 "$finance_root"
 # Stop only this app's existing demo worker before updating its isolated runtime.
 /bin/launchctl bootout "gui/$(id -u)/com.personalfinance.demo-worker" >/dev/null 2>&1 || true
 "$finance_python" -m venv "$finance_root/runtime"
-"$finance_root/runtime/bin/python" -m pip install "$project_root"
+"$finance_root/runtime/bin/python" -m pip install --quiet --disable-pip-version-check "$project_root"
 exec "$finance_root/runtime/bin/python" -m finance.install --data-dir "$finance_root" "$@"

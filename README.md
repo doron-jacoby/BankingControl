@@ -10,18 +10,21 @@ cd /Users/doron/source/BankingControl
 ./install.sh
 ```
 
-The English wizard checks macOS/Python, asks before installing an isolated
-runtime, creates a Keychain key and encrypted demo database, asks before the
-first import, and runs **the same worker once in the foreground** to check
-permissions and show a local monthly summary. It can then install and verify a
+The English wizard checks macOS/Python and installs an isolated runtime.
+Demo setup asks once before creating encrypted storage and importing data,
+then runs **the same worker once in the foreground** to check
+permissions and show a short monthly summary. It can then install and verify a
 persistent demo LaunchAgent. The installed runtime is independent of this
 checkout, under `~/Library/Application Support/PersonalFinance/runtime`.
 
 The full import/report/worker flow uses synthetic data. The second setup option
 now supports **live Financy authentication and account discovery** against the
 published API 1.0.0 contract. It guides you through signing in, linking your bank
-in Financy, finding Settings -> API, and entering credentials locally with hidden
-input. Credentials are verified before being stored as one macOS Keychain item.
+in Financy and finding API credentials at the bottom of Settings.
+Paste each value and press Enter: a masked prefix (up to eight characters) and
+character count confirm receipt. Full values remain hidden. Credentials are
+verified before being stored as one macOS Keychain item. There are no extra
+Enter confirmations between instructions.
 
 Live transaction import remains disabled: the published transaction schema does
 not enumerate status values or define pending-to-final links. Those semantics
@@ -30,7 +33,7 @@ Production Netflix Conductor integration also still needs its version/SDK.
 See [the verified Financy contract and remaining gaps](docs/FINANCY_CONTRACT.md).
 
 `./install.sh --check` checks prerequisites without installing anything.
-`./install.sh --demo` skips the mode choice but still asks before changes/import.
+`./install.sh --demo` skips the mode choice but still asks before the first import.
 An explicit `FINANCE_PYTHON=/path/to/python3.12` can select your Python.
 Installer reruns reuse the existing key and database. Keychain permission
 prompts must be completed interactively; the automated tests use fakes.

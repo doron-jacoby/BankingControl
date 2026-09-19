@@ -258,26 +258,31 @@ def connect_interactively(
             raise FinancyError("validation")
         read_secret = getpass.getpass
     print(
-        "Open https://financy.open-finance.ai -> Settings -> API.\n"
-        "An 'API available on your plan' message confirms eligibility; it is not a credential.\n"
-        "Find the actual clientId, clientSecret and userId values supplied by Financy.\n"
-        "Client ID identifies your Financy API client; do not enter a bank login or invent a value.\n"
-        "If you only see the availability message, press Ctrl+C and ask Financy support where\n"
-        "your API credentials are shown. The public guide does not show the exact screen.\n"
-        "Copy each value into this terminal when prompted. Pasted input stays invisible;\n"
-        "press Enter after pasting. Do not paste credentials into chat."
+        "\n🔑 Financy -> Settings -> scroll to the bottom -> API credentials.\n"
+        "Use each field's copy button to get the full value.\n"
+        "Paste, then Enter: input is hidden; a prefix and character count confirm receipt.\n"
+        "Verified credentials will be saved in macOS Keychain."
     )
+
+    def read(label: str) -> str:
+        while True:
+            value = read_secret(f"{label}: ").strip()
+            if not value or len(value) > 8192 or not value.isprintable():
+                print(
+                    "⚠ Empty or invalid value. Copy the full credential and try again."
+                )
+                continue
+            # Never reveal a whole short credential, or terminal control characters.
+            prefix = value[: min(8, len(value) // 2)]
+            print(f"✓ {label}: {prefix}•••••••• ({len(value)} characters)")
+            return value
+
     credentials = Credentials(
-        clientId=read_secret(
-            "[1/3] Client ID - copy the clientId value from Financy: "
-        ).strip(),
-        clientSecret=read_secret(
-            "[2/3] Client secret - copy the clientSecret value: "
-        ).strip(),
-        userId=read_secret(
-            "[3/3] User ID - copy the userId value from the same screen: "
-        ).strip(),
+        clientId=read("[1/3] Client ID"),
+        clientSecret=read("[2/3] Client secret"),
+        userId=read("[3/3] User ID"),
     )
+    print("⏳ Checking API access and linked accounts…")
     client = FinancyClient(credentials, transport)
     summary = client.connection_summary()
     discovered = client.list_accounts()

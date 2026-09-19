@@ -13,7 +13,8 @@ from unittest.mock import Mock, patch
 from test_foundation import NOW
 
 from finance.demo import MonthlyDemoProvider, demo_provider
-from finance.install import launchd_definition, live_requirements, setup_demo
+from finance.install import launchd_definition, setup_demo
+from finance.install import main as install_main
 from finance.orchestration import FakeConductorAdapter, SyncTask, execute_task, run_once
 from finance.security import FakeSecretStore
 from finance.service import FinanceService
@@ -184,7 +185,7 @@ class AutomationTests(unittest.TestCase):
 
 class InstallerTests(unittest.TestCase):
     def test_guided_demo_end_to_end_without_real_keychain_or_service(self) -> None:
-        answers = iter(["y", "n", "y"])
+        answers = iter(["y", "n"])
         store = FakeSecretStore()
         with tempfile.TemporaryDirectory() as directory:
             stream = io.StringIO()
@@ -196,7 +197,7 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "demo" / "finance.db").exists())
 
     def test_declining_initial_import_does_not_start_service_or_import(self) -> None:
-        answers = iter(["y", "y", "n"])
+        answers = iter(["n"])
         with (
             tempfile.TemporaryDirectory() as directory,
             patch("finance.install.start_launch_agent") as start,
@@ -209,9 +210,10 @@ class InstallerTests(unittest.TestCase):
                     1,
                 )
             start.assert_not_called()
+            self.assertFalse((Path(directory) / "demo" / "finance.db").exists())
 
     def test_background_configuration_is_reviewable_and_secret_free(self) -> None:
-        answers = iter(["y", "y", "y"])
+        answers = iter(["y", "y"])
         with (
             tempfile.TemporaryDirectory() as directory,
             patch("finance.install.start_launch_agent") as start,
@@ -239,18 +241,26 @@ class InstallerTests(unittest.TestCase):
         encoded = plistlib.dumps(definition)
         self.assertEqual(plistlib.loads(encoded), definition)
 
-    def test_live_onboarding_is_explicitly_blocked_and_stepwise(self) -> None:
-        steps: list[str] = []
-
-        def ask(prompt: str) -> str:
-            steps.append(prompt)
-            return ""
-
+    def test_live_setup_goes_directly_from_mode_to_credentials(self) -> None:
         stream = io.StringIO()
-        with contextlib.redirect_stdout(stream):
-            live_requirements(ask)
-        self.assertEqual(len(steps), 4)
+        with (
+            contextlib.redirect_stdout(stream),
+            patch("finance.install.sys.platform", "darwin"),
+            patch("builtins.input", side_effect=["2"]),
+            patch("finance.install.MacOSKeychain", return_value=FakeSecretStore()),
+            patch(
+                "finance.install.connect_interactively",
+                return_value={
+                    "account_count": 2,
+                    "connections_requiring_attention": 1,
+                },
+            ) as connect,
+        ):
+            self.assertEqual(install_main([]), 0)
+        connect.assert_called_once()
         self.assertIn("Live transaction import is not enabled", stream.getvalue())
+        self.assertIn("2 accounts", stream.getvalue())
+        self.assertIn("renew bank permissions", stream.getvalue())
 
     def test_rerunning_setup_preserves_existing_key_and_data(self) -> None:
         store = FakeSecretStore()
@@ -260,6 +270,6 @@ class InstallerTests(unittest.TestCase):
                     result = setup_demo(
                         Path(directory),
                         store,
-                        ask=Mock(side_effect=["y", "n", "y"]),
+                        ask=Mock(side_effect=["y", "n"]),
                     )
                 self.assertEqual(result, 0)

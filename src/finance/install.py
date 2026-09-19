@@ -1,14 +1,12 @@
 """English guided setup: full demo or verified Financy account discovery."""
 
 import argparse
-import json
 import os
 import plistlib
 import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict
 from pathlib import Path
 
 from finance.analytics import AnalyticsService
@@ -105,9 +103,9 @@ def setup_demo(
     ask: Callable[[str], str] = input,
     launch_agent: Path | None = None,
 ) -> int:
-    print("\nDemo mode: no bank or Conductor server connection. All data is synthetic.")
+    print("\n🧪 Demo — synthetic data only. macOS may ask for Keychain access.")
     if not confirm(
-        "Step 1/5 - Create an encrypted database and Keychain key? macOS may ask for permission.",
+        "Create encrypted storage and run the first demo import?",
         ask,
     ):
         return 1
@@ -124,76 +122,39 @@ def setup_demo(
         )
         with open_database(key, path, create=True):
             pass
-    print("Encryption and key verified. The key is never displayed or saved to a file.")
+    print("🔒 Encrypted storage ready.")
     provider = demo_provider()
-    print(
-        f"Step 2/5 - Fake provider verified: {len(provider.list_accounts())} demo accounts."
-    )
-    background = confirm(
-        "Step 3/5 - Install a persistent demo worker for weekly synthetic syncs?", ask
-    )
-    if background:
-        print(
-            "The worker runs while you are logged in. It cannot wake a sleeping Mac. Data stays local."
-        )
-    if not confirm(
-        "Step 4/5 - Run the same worker once now, import demo data and display a summary?",
-        ask,
-    ):
-        print("Setup stopped before importing. Run the wizard again to continue.")
-        return 1
+    print("⏳ Running the demo worker once…")
     service = FinanceService(SyncService(provider, path, key))
     output = run_demo_worker(service, once=True)
-    print(json.dumps(output, ensure_ascii=False, indent=2))
     if output.get("status") != "completed":
-        print(
-            "The test run did not complete. Check Keychain and directory permissions, then retry."
-        )
+        print("⚠ Demo run failed. Check Keychain and folder permissions, then retry.")
         return 1
     with open_database(key, path) as db:
         now = utc_now()
         summary = AnalyticsService(db).get_real_monthly_expenses(now.year, now.month)
-    print("Local summary of synthetic demo data - not your bank data:")
-    print(json.dumps(asdict(summary), default=str, ensure_ascii=False, indent=2))
-    if background:
+    print(f"✓ Demo import complete: {output['accounts_processed']} accounts.")
+    print(f"📊 Demo expenses — {summary.year}-{summary.month:02d}:")
+    for currency, totals in sorted(summary.currencies.items()):
+        print(f"   {currency} {totals.total:.2f}")
+    if confirm("Run weekly demo syncs in the background while logged in?", ask):
         destination = (
             launch_agent or Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
         )
         write_launch_agent(directory, destination)
         start_launch_agent(destination, directory)
-        print("Step 5/5 - Background worker started and fake polling verified.")
+        print("✓ Background demo worker running. Syncs resume when your Mac wakes.")
     else:
-        print("Step 5/5 - Demo complete. No background service was started.")
-    print(
-        "Live account discovery is available in Financy setup. Live transaction import and Conductor automation are not enabled yet."
-    )
+        print("✓ Demo setup complete.")
     return 0
 
 
-def live_requirements(ask: Callable[[str], str] = input) -> None:
+def live_requirements() -> None:
     print(
-        "\nFinancy setup: verified authentication and account discovery are available."
+        "\n🌐 Sign in: https://financy.open-finance.ai\n"
+        "🏦 Add your bank in Financy and complete its permission screens.\n"
+        "This connects your accounts. Live transaction import is not enabled yet."
     )
-    steps = [
-        "1. Open https://financy.open-finance.ai and sign in to your existing account. "
-        "Data API access requires an eligible paid plan; check your plan in Financy.",
-        "2. In Financy, add Bank Leumi (or your bank/card) and follow the bank's hosted "
-        "consent screens. Complete the permissions there and return to Financy. "
-        "Do not enter your bank password into this installer.",
-        "3. Open Settings -> API in Financy and locate the actual clientId, clientSecret "
-        "and userId values. An API availability badge only confirms your plan includes access. "
-        "If those fields are missing, stop here and ask Financy support where to find them. "
-        "The next step reads these values with hidden input and stores them in macOS Keychain.",
-        "4. This setup verifies credentials and discovers accounts only. Live transaction import "
-        "is not enabled: documented status values and pending/final links still need confirmation. "
-        "Production Netflix Conductor integration also awaits its deployed version and SDK.",
-    ]
-    for step in steps:
-        print(step)
-        ask(
-            "Press Enter when ready for the next step (do not type a password or token here): "
-        )
-    print("Official guide: https://docs-financy.open-finance.ai/docs/authentication")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,19 +167,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         if not args.demo:
-            mode = input(
-                "Setup mode: 1 - Full demo; 2 - Connect Financy accounts [1]: "
-            ).strip()
+            mode = input("\n1 🧪 Demo\n2 🏦 Connect Financy\nChoose [1]: ").strip()
             if mode == "2":
                 live_requirements()
-                if not confirm(
-                    "Verify Financy credentials and save them in macOS Keychain?"
-                ):
-                    return 1
-                print(json.dumps(connect_interactively(MacOSKeychain()), indent=2))
-                print(
-                    "Account discovery setup complete. Run finance accounts to view accounts locally."
-                )
+                summary = connect_interactively(MacOSKeychain())
+                print("🔒 Credentials verified and saved in Keychain.")
+                print(f"✓ Found {summary['account_count']} accounts.")
+                if summary["connections_requiring_attention"]:
+                    print(
+                        "⚠ Open Financy to renew bank permissions or fix its connection alerts."
+                    )
+                elif summary["account_count"] == 0:
+                    print("🏦 Add your bank in Financy, then rerun setup.")
+                print("✓ Financy setup complete.")
                 return 0
             elif mode not in {"", "1"}:
                 return 1
@@ -230,9 +191,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return setup_demo(directory, MacOSKeychain())
     except FinancyError as error:
-        print(
-            f"Financy verification failed: {error.code}. Check Settings -> API and your plan or connection."
-        )
+        guidance = {
+            "authentication": "Credentials rejected. Copy all three values again from Settings -> API.",
+            "plan": "API access is unavailable on your Financy plan. Check your plan in Financy.",
+            "forbidden": "Access denied. Check API permissions in Financy.",
+            "transient": "Financy is temporarily unavailable. Check your connection and retry.",
+        }.get(error.code, "Could not verify Financy. Check Settings -> API and retry.")
+        print(f"⚠ {guidance}")
         return 1
     except (SecretError, StorageError, OSError, ValueError, RuntimeError):
         print(
