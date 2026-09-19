@@ -9,6 +9,9 @@ description = "Local-first, read-only personal finance monitoring"
 requires-python = ">=3.12"
 dependencies = ["sqlcipher3>=0.6.2,<0.7", "keyring>=25,<26"]
 
+[project.scripts]
+finance = "finance.cli:main"
+
 [project.optional-dependencies]
 dev = ["ruff>=0.12,<1", "mypy>=1.15,<3"]
 
@@ -22,7 +25,7 @@ finance = ["schema.sql"]
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -49,6 +49,14 @@ CREATE TABLE transactions (
 );
 CREATE INDEX transactions_date ON transactions (transaction_date);
 
+-- Retain old pending IDs after a provider changes the ID on settlement.
+CREATE TABLE transaction_aliases (
+    account_id TEXT NOT NULL REFERENCES accounts (internal_id),
+    source_key TEXT NOT NULL,
+    transaction_id TEXT NOT NULL REFERENCES transactions (internal_id),
+    PRIMARY KEY (account_id, source_key)
+);
+
 CREATE TABLE sync_states (
     provider TEXT NOT NULL,
     account_id TEXT NOT NULL,

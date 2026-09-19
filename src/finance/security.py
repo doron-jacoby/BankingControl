@@ -59,19 +59,19 @@ def validate_key(key: str) -> str:
     return key
 
 
-def load_database_key(store: SecretStore) -> str:
-    key = store.get_password(SERVICE, DATABASE_KEY)
+def load_database_key(store: SecretStore, name: str = DATABASE_KEY) -> str:
+    key = store.get_password(SERVICE, name)
     if key is None:
         raise SecretError("Database key missing; restore Keychain before opening")
     return validate_key(key)
 
 
-def create_database_key(store: SecretStore) -> str:
+def create_database_key(store: SecretStore, name: str = DATABASE_KEY) -> str:
     """Installation only, before DB creation. Never overwrites an existing key."""
-    if store.get_password(SERVICE, DATABASE_KEY) is not None:
+    if store.get_password(SERVICE, name) is not None:
         raise SecretError("Database key already exists")
     key = secrets.token_hex(32)
-    store.set_password(SERVICE, DATABASE_KEY, key)
-    if load_database_key(store) != key:
+    store.set_password(SERVICE, name, key)
+    if load_database_key(store, name) != key:
         raise SecretError("Database key could not be verified")
     return key
