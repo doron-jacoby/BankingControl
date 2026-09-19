@@ -1022,7 +1022,7 @@ class LiveTrendTests(unittest.TestCase):
         trend = general_category_trend(self.snapshot, [rule])
         august = trend["currencies"]["ILS"]["2026-08"]
         self.assertEqual(august["categories"]["טיולים בחו״ל"], Decimal("500"))
-        self.assertEqual(august["categories"]["אחר"], Decimal("15"))
+        self.assertEqual(august["categories"]["עמלות בנק"], Decimal("15"))
         self.assertEqual(august["total"], Decimal("635"))
         self.assertEqual(august["total_excluding_travel"], Decimal("135"))
 
