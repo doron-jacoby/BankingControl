@@ -90,8 +90,15 @@ Finite numeric strings are parsed exactly as Decimal when present.
 `finance sync` creates or reuses the live SQLCipher database and Keychain key.
 It stores one minimized snapshot in an additive `live_snapshot` table, separate
 from the normalized `transactions` ledger. Optional merchant name (bounded, long digit sequences redacted) and merchant
-country are retained for identifying review items and overseas transport. No
-transaction descriptions, account numbers, street addresses, whole API payloads
+country are retained for identifying review items and overseas transport.
+With the user's approval, the documented `creditorName` is also retained as
+`recipient_name` (whitespace normalized, at most 160 characters, long digit
+sequences redacted). It is displayed in local reports and used as the merchant
+fallback when no merchant name is supplied. Missing/null names remain empty;
+non-string names fail validation without replacing the previous snapshot.
+Resync the desired date window to populate names in existing history. Old
+snapshots without this field remain readable. Names never enter sync metadata.
+No transaction descriptions, account numbers, street addresses, whole API payloads
 or credentials are copied into it.
 Each successful sync atomically replaces the snapshot; failed validation leaves
 the old snapshot intact. This avoids accumulating obsolete pending IDs without
@@ -116,10 +123,10 @@ No live worker, automatic bank refresh or financial write operation is enabled.
 
 ## User-tagged reconciliation (2026-09-19)
 
-Financy's transaction reads carry no counterparty details, so movements between
+Financy's transaction reads may include recipient names, but movements between
 the user's own accounts, money received from another person, and income posted
 under an unexpected category (for example ESOP sale proceeds landing in a
-securities account) cannot be inferred from amounts or provider labels alone.
+securities account) cannot be inferred from names, amounts or provider labels alone.
 Inventing an exclusion from equal amounts or a category name would misclassify
 unrelated movements, so none is attempted.
 
@@ -180,8 +187,8 @@ insurance, not a fee. Subscriptions: live data has no `SUBSCRIPTIONS` category, 
 currencies: a named merchant with included debits in 3+ months, at most 1.5
 charges per active month, and 80%+ of charges within 20% of the median amount.
 Fees, insurance and standing orders are excluded from that group. Standing
-orders: subcategory `DIRECT_DEBIT`; Financy provides no payee, so rows show the
-charge dates and account label.
+orders: subcategory `DIRECT_DEBIT`; rows show the merchant or recipient name
+when available, charge dates and account label.
 
 Each group gets a twelve-month ILS total trend (`_predicate_monthly_totals`) and
 the ten most expensive merchants in the latest completed month

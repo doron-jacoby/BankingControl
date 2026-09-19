@@ -177,6 +177,57 @@ class LiveTests(unittest.TestCase):
         august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
         self.assertEqual(august["categories"]["טיולים בחו״ל"], Decimal("19.90"))
 
+    def test_recipient_survives_resync_and_appears_in_private_reports(self) -> None:
+        self.sync()
+        recipient = "IBI <נמען>"
+        self.client.transaction_rows.return_value = [
+            row(
+                creditorName="  IBI   <נמען>  ",
+                creditorAccount={"iban": "PRIVATE ACCOUNT"},
+                category={"main": "TRANSFER", "sub": "PRIVATE"},
+            )
+        ]
+        info = self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        record = snapshot["records"][0]
+        self.assertEqual(record["recipient_name"], recipient)
+        self.assertEqual(record["merchant"], recipient)
+        self.assertEqual(len(snapshot["records"]), 1)
+        self.assertNotIn("IBI", json.dumps(info))
+        self.assertNotIn(recipient.encode(), self.path.read_bytes())
+        self.assertNotIn("PRIVATE ACCOUNT", json.dumps(snapshot))
+        self.assertNotIn("PRIVATE DESCRIPTION", json.dumps(snapshot))
+        for html in (simple_report_html(snapshot), report_html(snapshot)):
+            self.assertIn("IBI &lt;נמען&gt;", html)
+            self.assertNotIn(recipient, html)
+        self.assertNotIn("העברה לא מזוהה", simple_report_html(snapshot))
+        monthly = summarize(snapshot, "2026-08")
+        self.assertEqual(monthly["reconciled"]["ILS"]["spend"], Decimal(0))
+        self.assertIn(
+            "unresolved_transfer", monthly["flagged_for_review"][0]["reasons"]
+        )
+
+    def test_recipient_validation_minimization_and_merchant_precedence(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(creditorName="נמען 123456789 " + "א" * 200, merchantName="Shop"),
+            row("null", creditorName=None),
+            row("empty", creditorName="  "),
+            row("missing"),
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        record, *unnamed = snapshot["records"]
+        self.assertEqual(record["merchant"], "Shop")
+        self.assertTrue(record["recipient_name"].startswith("נמען … "))
+        self.assertEqual(len(record["recipient_name"]), 160)
+        self.assertTrue(all(r["recipient_name"] == "" for r in unnamed))
+        invalid_names: tuple[object, ...] = (123, False, [], {})
+        for invalid in invalid_names:
+            self.client.transaction_rows.return_value = [row(creditorName=invalid)]
+            with self.assertRaises(FinancyError):
+                self.sync()
+            self.assertEqual(load_snapshot(self.path, self.store), snapshot)
+
     def test_school_description_becomes_education_without_retaining_private_text(
         self,
     ) -> None:

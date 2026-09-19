@@ -195,7 +195,7 @@ REASON_LABELS_HE = {
     "historical_increase": "עלייה לעומת חיובים קודמים מאותו סוג",
     "insurance_review": "ביטוח — לבדוק ספק, כיסוי וסכום",
     "unclear_charge": "חיוב ללא סיווג ברור",
-    "unresolved_transfer": "העברה לא מזוהה — לא נכללה בהוצאות",
+    "unresolved_transfer": "העברה שטרם סווגה — לא נכללה בהוצאות",
     "unresolved_settlement": "חיוב כרטיס בעו״ש — לא נכלל כדי למנוע ספירה כפולה",
     "unresolved_investment": "תנועת השקעה או המרת מטבע — לא נכללה בהוצאות",
     "unresolved_credit": "זיכוי לא מזוהה — לבדוק אם זה החזר הוצאה",
@@ -225,6 +225,7 @@ class LiveRecord:
     subcategory: str
     merchant: str = ""
     merchant_country: str = ""
+    recipient_name: str = ""
 
 
 def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
@@ -237,8 +238,8 @@ def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
 class LiveTagRule:
     """A user-confirmed reconciliation decision for provisional live records.
 
-    Financy exposes no counterparty details, so self-transfers and gifts cannot
-    be inferred from amounts or categories alone; the user identifies them from
+    Recipient names may be available, but self-transfers and gifts cannot
+    be inferred from names, amounts or categories alone; the user identifies them from
     their own bank/Financy records and this rule remembers that decision so it
     can be reapplied to history and future syncs without repeating the review.
     """
@@ -346,7 +347,7 @@ def resolve_tag(record: dict[str, Any], rules: Sequence[LiveTagRule]) -> str | N
 class LiveLabelRule:
     """A user-given display name for records Financy exposes with no merchant.
 
-    Standing orders (DIRECT_DEBIT) carry no counterparty name from Financy, so
+    When standing orders (DIRECT_DEBIT) have no merchant or recipient name,
     reports fall back to their raw category/subcategory. This rule lets the
     user attach a recognizable name (e.g. "ועד בית") once it is identified.
     """
@@ -528,7 +529,13 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             raise ValueError
         day = date.fromisoformat(raw_day)
         category = row.get("changedCategory") or row.get("category") or {}
-        merchant = row.get("merchantName") or ""
+        recipient = row.get("creditorName")
+        if recipient is None:
+            recipient = ""
+        if not isinstance(recipient, str):
+            raise ValueError
+        recipient = re.sub(r"\d{6,}", "…", " ".join(recipient.split()))[:160]
+        merchant = row.get("merchantName") or recipient
         description = row.get("description")
         if isinstance(description, dict) and any(
             isinstance(value, str) and _school_merchant(value)
@@ -556,6 +563,7 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             subcategory=label(category.get("sub"), "UNCATEGORIZED"),
             merchant=merchant,
             merchant_country=country,
+            recipient_name=recipient,
         )
     except (
         KeyError,
@@ -1201,7 +1209,11 @@ def report_html(snapshot: dict[str, Any], rules: Sequence[LiveTagRule] = ()) -> 
             for reason, entry in bucket["breakdown"].items()
         ]
         flagged_rows = [
-            {**row, "reasons": ", ".join(row["reasons"])}
+            {
+                **row,
+                "recipient_name": row.get("recipient_name", ""),
+                "reasons": ", ".join(row["reasons"]),
+            }
             for row in report["flagged_for_review"]
         ]
         coverage = (
@@ -1248,6 +1260,7 @@ def report_html(snapshot: dict[str, Any], rules: Sequence[LiveTagRule] = ()) -> 
                         "currency": "Currency",
                         "category": "Category",
                         "subcategory": "Subcategory",
+                        "recipient_name": "Recipient",
                         "amount": "Amount",
                         "reasons": "Why flagged",
                         "id": "Record ID",
@@ -1516,13 +1529,13 @@ def simple_report_html(
     ]
     if flagged:
         flagged_html = (
-            "<div class='scroll'><table><thead><tr><th>תאריך</th><th>חשבון</th><th>בית עסק / נושא</th>"
+            "<div class='scroll'><table><thead><tr><th>תאריך</th><th>חשבון</th><th>נמען / בית עסק / נושא</th>"
             "<th>יחידות</th><th>סכום</th><th>למה לבדוק</th></tr></thead><tbody>"
             + "".join(
                 "<tr>"
                 f"<td dir='ltr'>{escape(item['day'])}</td>"
                 f"<td>{account_labels[item['account_id']]} · {escape(ACCOUNT_TYPE_LABELS_HE.get(item['account_type'], item['account_type']))}</td>"
-                f"<td>{escape(item.get('merchant') or _general_category(item['category'], item['subcategory'], item.get('merchant_country', ''), item.get('merchant', '')))}"
+                f"<td>{escape(item.get('recipient_name') or item.get('merchant') or _general_category(item['category'], item['subcategory'], item.get('merchant_country', ''), item.get('merchant', '')))}"
                 "<details><summary>פרטי זיהוי</summary>"
                 f"<p dir='ltr'>{escape(item['category'])} / {escape(item['subcategory'])}<br>"
                 f"{escape(item['id'])}<br>{escape(item['account_id'])}</p></details></td>"

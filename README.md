@@ -94,7 +94,7 @@ in the category labels or Hebrew fee words in the merchant name (עמלה, דמ�
 fees. Financy has no subscription label, so subscriptions are estimated: a
 merchant charged about once a month at a stable price (within 20% of its median)
 in at least three months. Standing orders are the `DIRECT_DEBIT` subcategory;
-Financy gives no payee name, so they are identified by date and account. Amounts
+recipient names are shown when supplied, alongside date and account. Amounts
 here are in full shekels, not thousands. Self-transfers, gifts and income are
 excluded, as in the rest of the report.
 
@@ -135,9 +135,16 @@ finance="$HOME/Library/Application Support/PersonalFinance/runtime/bin/finance"
 ```
 
 Each live sync atomically replaces the previous snapshot with the requested date
-window. `monthly` reads it offline; `report` additionally fetches any missing
+window. Recipient names (`creditorName`) are retained in the encrypted snapshot
+and shown in local reports; they also serve as the merchant fallback when none is
+supplied. Names are whitespace-normalized, capped at 160 characters, and long
+digit sequences are redacted. Descriptions and recipient account details are
+still discarded. Run `finance sync` then `finance report` to populate names for
+the requested history; older snapshots remain readable. Sync output contains
+only operational metadata, without names.
+`monthly` reads it offline; `report` additionally fetches any missing
 month-end exchange rates, then reuses the saved rates offline. The HTML and PDF reports contain plaintext
-aggregates and are written with mode 0600. The HTML loads no external assets; the database
+aggregates and recipient names and are written with mode 0600. The HTML loads no external assets; the database
 remains encrypted. Identified purchases can be combined across bank and card accounts, but unresolved
 settlements/transfers are withheld. Source statuses other than `BOOKED` remain
 outside spending totals. Credits are not assumed to be
@@ -147,10 +154,10 @@ booking date, then value date. Source dates have no time, so live timezone
 conversion is unavailable. Complete requested months do not prove complete bank
 history. The live worker remains disabled.
 
-Financy exposes no counterparty details, so movements between the user's own
+Recipient names can identify movements, but movements between the user's own
 accounts, gifts from other people, and income landing in an unexpected category
 (such as ESOP sale proceeds credited to a securities account) cannot be inferred
-from amounts or provider labels. `finance tag` records the user's own
+from names, amounts or provider labels alone. `finance tag` records the user's own
 determination as a rule: a one-off override for a specific `--account-id`
 plus `--record-id`, or a reusable pattern by `--category`/`--subcategory`
 (optionally scoped to one `--account-id`). Rules live in the encrypted database
