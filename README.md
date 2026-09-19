@@ -66,8 +66,14 @@ Flights go to overseas travel; transport with a foreign merchant country goes
 there too. Subscriptions follow their subject; an unknown subject is Unidentified.
 
 Identified spending excludes unresolved transfers, bank card settlements,
-investment movements, credits, incomplete statuses and missing amounts. These
-remain visible for review. A label is a reason to withhold a movement, not proof
+investment movements, credits, incomplete statuses and missing amounts.
+Investment and savings movements, card settlements, and incoming transfers are
+intentionally excluded from both spending and review, including incomplete
+records (incoming transfers require a known positive amount). Other credits and
+outgoing transfers still require review. Confirmed `self_transfer`,
+`gift` and `income` tags also stay out of the review amount and count even when
+source data is incomplete. Other unresolved movements remain visible for review.
+A label is a reason to withhold a movement, not proof
 of a matched transfer. Explicit `expense` tags override the withholding; a
 positive amount tagged as expense reduces spending (a confirmed refund).
 `self_transfer`, `gift` and `income` retain their manual meanings.

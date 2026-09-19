@@ -106,9 +106,14 @@ are counted and excluded. Requested ranges do not prove provider history coverag
 
 Monthly reports keep account types, currencies and source statuses separate.
 Only source-labelled BOOKED rows enter the category breakdown. Provider category
-overrides take precedence; settlement, transfer and return labels are counted for
-review. Untagged settlement/transfer/investment movements are withheld from
-identified spending until resolved; this is not a claim of a verified match.
+overrides take precedence. Untagged outgoing transfers and other credits remain
+withheld from identified spending and visible for review. Investment and savings
+movements, card settlements, and incoming transfers are intentionally excluded
+from spending and review unless explicitly tagged as an expense or income.
+These exclusions apply even with incomplete source data; incoming transfers
+require a known positive amount. This is not a claim of a verified match.
+Confirmed non-expense tags do not return to the review queue
+because source data is incomplete; income totals still require BOOKED amounts.
 `finance report` writes a Hebrew HTML report with mode 0600; missing public
 month-end exchange rates are fetched once, then report generation works offline;
 `--detailed` selects the English diagnostic tables.

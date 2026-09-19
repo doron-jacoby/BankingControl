@@ -45,8 +45,9 @@ from finance.sync import sync_lock
 
 LIMITATIONS = (
     "Provisional movements, not reconciled spending. Source BOOKED labels are "
-    "not verified final-ledger semantics. Untagged transfers, card settlements, "
-    "investment movements and credits are held for review, not matched by amount. "
+    "not verified final-ledger semantics. Untagged outgoing transfers and other "
+    "credits are held for review, not matched by amount. Investment movements, "
+    "card settlements and incoming transfers are excluded from spending and review. "
     "Only explicit expense tags override those exclusions; positive expense "
     "adjustments reduce spending. Requested dates do not prove bank coverage. "
     "Category and anomaly rules are local hints, not verified findings."
@@ -196,8 +197,6 @@ REASON_LABELS_HE = {
     "insurance_review": "ביטוח — לבדוק ספק, כיסוי וסכום",
     "unclear_charge": "חיוב ללא סיווג ברור",
     "unresolved_transfer": "העברה לא מזוהה — לא נכללה בהוצאות",
-    "unresolved_settlement": "חיוב כרטיס בעו״ש — לא נכלל כדי למנוע ספירה כפולה",
-    "unresolved_investment": "תנועת השקעה או המרת מטבע — לא נכללה בהוצאות",
     "unresolved_credit": "זיכוי לא מזוהה — לבדוק אם זה החזר הוצאה",
     "missing_amount": "סכום חסר — לא נכלל בהוצאות",
     "not_booked": "חיוב ממתין או סטטוס לא ידוע — לא נכלל בהוצאות",
@@ -664,33 +663,46 @@ def load_snapshot(path: Path, store: SecretStore) -> dict[str, Any]:
 def _reconcile_reason(
     record: dict[str, Any], amount: Decimal | None, tag: str | None
 ) -> tuple[str, bool]:
-    if record["status"] != "BOOKED":
-        return "not_booked", False
-    if amount is None:
-        return "missing_amount", False
+    # Known non-expenses do not need reclassification because source data is
+    # incomplete. Explicit income/expense tags still override these exclusions.
     if tag == "self_transfer":
         return "self_transfer", False
     if tag == "gift":
         return "gift", False
     if tag == "income":
-        return "income", True
+        return "income", record["status"] == "BOOKED" and amount is not None
+    if tag != "expense" and (
+        record["category"]
+        in {
+            "TRADING",
+            "SECURITY",
+            "SECURITIES",
+            "INVESTMENT",
+            "INVESTMENTS",
+            "DEPOSIT",
+        }
+        or record["account_type"] in {"investment", "savings"}
+    ):
+        return "investment", False
+    if tag != "expense" and record["subcategory"] == "CREDIT_CARD_CHECKING":
+        return "card_settlement", False
+    if (
+        tag != "expense"
+        and record["category"] == "TRANSFER"
+        and amount is not None
+        and amount > 0
+    ):
+        return "incoming_transfer", False
+    if record["status"] != "BOOKED":
+        return "not_booked", False
+    if amount is None:
+        return "missing_amount", False
     if tag == "expense":
         return "expense_tagged", True
     if amount >= 0:
         return "unresolved_credit", False
-    if record["subcategory"] == "CREDIT_CARD_CHECKING":
-        return "unresolved_settlement", False
     if record["category"] == "TRANSFER":
         return "unresolved_transfer", False
-    if record["category"] in {
-        "TRADING",
-        "SECURITY",
-        "SECURITIES",
-        "INVESTMENT",
-        "INVESTMENTS",
-        "DEPOSIT",
-    } or record["account_type"] in {"investment", "savings"}:
-        return "unresolved_investment", False
     if amount < 0:
         return "expense", True
     return "unresolved_credit", False
@@ -801,6 +813,8 @@ def _flag_debits(
                 continue
             amount = Decimal(record["amount"]) if record["amount"] is not None else None
             reason, included = _reconcile_reason(record, amount, tag)
+            if reason in {"investment", "card_settlement", "incoming_transfer"}:
+                continue
             reasons = []
             if not included:
                 reasons.append(reason)
@@ -1498,16 +1512,14 @@ def simple_report_html(
             )
             counted_months += 1
             for label in labels:
-                category_sums[label] += months[key]["categories"].get(
-                    label, Decimal(0)
-                )
+                category_sums[label] += months[key]["categories"].get(label, Decimal(0))
             total_sum += months[key]["total_excluding_travel"]
             travel_sum += travel_amount
             unresolved_sum_total += unresolved_sum
             unresolved_count_total += unresolved_count
         if counted_months:
             rows.append(
-                f"<tr><td><strong>ממוצע חודשי</strong></td>"
+                "<tr><td><strong>ממוצע חודשי</strong></td>"
                 + "".join(
                     f"<td>{money(category_sums[label] / counted_months, currency)}</td>"
                     for label in labels
@@ -1699,8 +1711,8 @@ def simple_report_html(
         + "</header><section><h2>הוצאות לפי חודש וקטגוריה</h2>"
         + "".join(trend_sections)
         + "<details><summary>איך לקרוא את הסכומים</summary><p>העמודה האחרונה מציגה את סכום התנועות לבירור (בערך מוחלט), ובסוגריים מספר התנועות. "
-        "תנועות שאושרו כהעברה פנימית, מתנה או הכנסה אינן דורשות בירור חוזר. "
-        "חיוב הכרטיס בעו״ש, העברות, תנועות השקעה וזיכויים לא מזוהים ממתינים לבירור ואינם נספרים כהוצאה. "
+        "תנועות השקעה, חיובי אשראי מרוכזים בעו״ש, העברות נכנסות ותנועות שאושרו כהעברה פנימית, מתנה או הכנסה אינן דורשות בירור ואינן נכללות בעמודה. "
+        "העברות יוצאות וזיכויים אחרים שלא סווגו ממתינים לבירור ואינם נספרים כהוצאה. "
         "חיובים ממתינים וסכומים חסרים אינם כלולים. סימון אישי כהוצאה גובר על סיווג זה; זיכוי שסומן כהוצאה מפחית את הסכום. "
         "הסכומים בטבלה מעוגלים לתצוגה בלבד; הסכום המדויק מופיע בהצבעה על מספר. "
         "מטבע זר מומר לפי השער היציג האחרון שפרסם בנק ישראל עד סוף חודש העסקה. "

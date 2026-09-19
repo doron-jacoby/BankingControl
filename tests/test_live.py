@@ -1018,16 +1018,13 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(100))
         self.assertEqual(
             {r["id"] for r in summary["flagged_for_review"]},
-            {"settlement", "transfer", "investment"},
+            {"transfer"},
         )
-        # Even without imported card purchases, settlement remains unresolved,
-        # not a verified exclusion or a fabricated purchase total.
+        # Settlement does not require review even without imported card purchases.
         snapshot["records"] = snapshot["records"][1:2]
         summary = summarize(snapshot, "2026-08")
         self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(0))
-        self.assertIn(
-            "unresolved_settlement", summary["flagged_for_review"][0]["reasons"]
-        )
+        self.assertEqual(summary["flagged_for_review"], [])
         override = LiveTagRule(
             tag="expense", account_id="account-1", record_id="settlement"
         )
@@ -1084,15 +1081,112 @@ class ReportRegressionTests(unittest.TestCase):
             .split("<td>אוגוסט 2026</td>")[1]
             .split("</tr>")[0]
         )
-        self.assertTrue(row.endswith("<td>0</td>"))
-        # Missing source status must remain unresolved even after identification.
+        self.assertTrue(row.endswith("title='ILS 0.00'>0.0</span> (0)</td>"))
+        # A known non-expense does not need classification again for missing status.
         snapshot["records"][3]["status"] = "UNKNOWN"
         row = (
             simple_report_html(snapshot, rules)
             .split("<td>אוגוסט 2026</td>")[1]
             .split("</tr>")[0]
         )
-        self.assertTrue(row.endswith("<td>1</td>"))
+        self.assertTrue(row.endswith("title='ILS 0.00'>0.0</span> (0)</td>"))
+
+    def test_known_exclusions_do_not_inflate_review(self) -> None:
+        excluded = [
+            self.record("trading", category="TRADING", amount="-50000"),
+            self.record("investment-credit", account_type="investment", amount="90000"),
+            self.record(
+                "unknown-investment", account_type="investment", status="UNKNOWN"
+            ),
+            self.record("savings", account_type="savings", amount=None),
+            self.record("confirmed-transfer", status="PENDING", amount="-80000"),
+            self.record("confirmed-gift", amount=None),
+            self.record("confirmed-income", status="UNKNOWN", amount="70000"),
+            self.record(
+                "card-settlement", subcategory="CREDIT_CARD_CHECKING", amount="-60000"
+            ),
+            self.record(
+                "card-credit", subcategory="CREDIT_CARD_CHECKING", amount="60000"
+            ),
+            self.record(
+                "pending-card", subcategory="CREDIT_CARD_CHECKING", status="PENDING"
+            ),
+            self.record(
+                "missing-card", subcategory="CREDIT_CARD_CHECKING", amount=None
+            ),
+            self.record("incoming-transfer", category="TRANSFER", amount="80000"),
+            self.record(
+                "incoming-bit",
+                category="TRANSFER",
+                subcategory="BIT_PAYBOX",
+                amount="5000",
+            ),
+            self.record(
+                "pending-incoming",
+                category="TRANSFER",
+                amount="80000",
+                status="PENDING",
+            ),
+        ]
+        rules = [
+            LiveTagRule(tag=tag, account_id="account-1", record_id=identity)
+            for identity, tag in (
+                ("confirmed-transfer", "self_transfer"),
+                ("confirmed-gift", "gift"),
+                ("confirmed-income", "income"),
+            )
+        ]
+        for remaining, amount, count in (
+            ([], "0.00", 0),
+            (
+                [
+                    self.record("unknown-credit", amount="25"),
+                    self.record("missing", amount=None),
+                    self.record("outgoing-transfer", category="TRANSFER", amount="-75"),
+                ],
+                "100.00",
+                3,
+            ),
+        ):
+            with self.subTest(count=count):
+                snapshot = self.snapshot(excluded + remaining)
+                summary = summarize(snapshot, "2026-08", rules)
+                self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(0))
+                self.assertEqual(summary["reconciled"]["ILS"]["income"], Decimal(0))
+                self.assertEqual(
+                    {r["id"] for r in summary["flagged_for_review"]},
+                    {r["id"] for r in remaining},
+                )
+                html = simple_report_html(snapshot, rules)
+                for label, displayed_count in (
+                    ("אוגוסט 2026", str(count)),
+                    ("<strong>ממוצע חודשי</strong>", f"{count:.1f}"),
+                ):
+                    row = html.split(f"<td>{label}</td>")[1].split("</tr>")[0]
+                    self.assertTrue(
+                        row.endswith(
+                            f"title='ILS {amount}'>{Decimal(amount) / 1000:.1f}</span> ({displayed_count})</td>"
+                        )
+                    )
+        # Explicit expense/refund decisions still override investment exclusions.
+        snapshot = self.snapshot([excluded[0], excluded[1]])
+        rules = [LiveTagRule(tag="expense", account_id="account-1")]
+        self.assertEqual(
+            summarize(snapshot, "2026-08", rules)["reconciled"]["ILS"]["spend"],
+            Decimal("-40000"),
+        )
+        snapshot = self.snapshot(
+            [
+                self.record(
+                    "tagged-card", subcategory="CREDIT_CARD_CHECKING", amount="-100"
+                ),
+                self.record("tagged-refund", category="TRANSFER", amount="25"),
+            ]
+        )
+        self.assertEqual(
+            summarize(snapshot, "2026-08", rules)["reconciled"]["ILS"]["spend"],
+            Decimal("75"),
+        )
 
     def test_insurance_increase_unknown_and_missing_amount_are_reviewed(self) -> None:
         snapshot = self.snapshot(
