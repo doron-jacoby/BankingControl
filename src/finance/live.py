@@ -47,7 +47,8 @@ LIMITATIONS = (
     "Provisional movements, not reconciled spending. Source BOOKED labels are "
     "not verified final-ledger semantics. Card settlement debits count as expenses "
     "without itemized details unless an explicit tag excludes them. Untagged "
-    "transfers, investment movements and credits are held for review. "
+    "transfers in either direction and other credits are held for review. "
+    "Investment movements and card settlement credits are excluded without review. "
     "Only explicit expense tags override those exclusions; positive expense "
     "adjustments reduce spending. Requested dates do not prove bank coverage. "
     "Category and anomaly rules are local hints, not verified findings."
@@ -203,7 +204,6 @@ REASON_LABELS_HE = {
     "insurance_review": "ביטוח — לבדוק ספק, כיסוי וסכום",
     "unclear_charge": "חיוב ללא סיווג ברור",
     "unresolved_transfer": "העברה שטרם סווגה — לא נכללה בהוצאות",
-    "unresolved_investment": "תנועת השקעה או המרת מטבע — לא נכללה בהוצאות",
     "unresolved_credit": "זיכוי לא מזוהה — לבדוק אם זה החזר הוצאה",
     "missing_amount": "סכום חסר — לא נכלל בהוצאות",
     "not_booked": "חיוב ממתין או סטטוס לא ידוע — לא נכלל בהוצאות",
@@ -681,35 +681,43 @@ def _reconcile_reason(
     # Investment-account movements mirror checking-side transfers; never spending.
     if record["account_type"] in INVESTMENT_ACCOUNT_TYPES:
         return "investment_account", False
-    if record["status"] != "BOOKED":
-        return "not_booked", False
-    if amount is None:
-        return ("fee_missing_amount" if _is_fee(record) else "missing_amount"), False
     if tag == "self_transfer":
         return "self_transfer", False
     if tag == "gift":
         return "gift", False
     if tag == "income":
-        return "income", True
+        return "income", record["status"] == "BOOKED" and amount is not None
+    if tag != "expense":
+        if record["category"] in {
+            "TRADING",
+            "SECURITY",
+            "SECURITIES",
+            "INVESTMENT",
+            "INVESTMENTS",
+            "DEPOSIT",
+        } and not (
+            record["subcategory"] == "FOREIGN_EXCHANGE"
+            and amount is not None
+            and 0 < -amount < FX_FEE_LIMIT
+        ):
+            return "investment", False
+        if amount is not None and amount > 0:
+            if record["subcategory"] == "CREDIT_CARD_CHECKING":
+                return "card_settlement_credit", False
+    if record["status"] != "BOOKED":
+        return "not_booked", False
+    if amount is None:
+        return ("fee_missing_amount" if _is_fee(record) else "missing_amount"), False
     if tag == "expense":
         return "expense_tagged", True
+    if record["category"] == "TRANSFER":
+        return "unresolved_transfer", False
     if amount >= 0:
         return "unresolved_credit", False
     if record["subcategory"] == "CREDIT_CARD_CHECKING":
         return "card_expense_without_details", True
-    if record["category"] == "TRANSFER":
-        return "unresolved_transfer", False
     if record["subcategory"] == "FOREIGN_EXCHANGE" and -amount < FX_FEE_LIMIT:
         return "expense", True
-    if record["category"] in {
-        "TRADING",
-        "SECURITY",
-        "SECURITIES",
-        "INVESTMENT",
-        "INVESTMENTS",
-        "DEPOSIT",
-    }:
-        return "unresolved_investment", False
     if amount < 0:
         return "expense", True
     return "unresolved_credit", False
@@ -820,7 +828,12 @@ def _flag_debits(
                 continue
             amount = Decimal(record["amount"]) if record["amount"] is not None else None
             reason, included = _reconcile_reason(record, amount, tag)
-            if reason in {"investment_account", "fee_missing_amount"}:
+            if reason in {
+                "investment_account",
+                "fee_missing_amount",
+                "investment",
+                "card_settlement_credit",
+            }:
                 continue
             reasons = []
             if not included:
@@ -1728,10 +1741,10 @@ def simple_report_html(
         + "</header><section><h2>הוצאות לפי חודש וקטגוריה</h2>"
         + "".join(trend_sections)
         + "<details><summary>איך לקרוא את הסכומים</summary><p>העמודה האחרונה מציגה את סכום התנועות לבירור (בערך מוחלט), ובסוגריים מספר התנועות. סכומים חסרים נספרים רק במספר התנועות. הממוצע מחושב על פני החודשים שיש בהם נתונים, כולל חודשים חלקיים. "
-        "תנועות שאושרו כהעברה פנימית, מתנה או הכנסה אינן דורשות בירור חוזר. "
+        "תנועות השקעה והמרת מטבע, זיכויי סליקת אשראי ותנועות שכבר סווגו כהעברה בין חשבונות, מתנה או הכנסה הוחרגו מסיבה ידועה ואינן נכללות בסכום לבירור. "
         "חיובי אשראי בעו״ש נכללים בהוצאות בעמודת ״אשראי ללא פירוט״, אלא אם נשמר עבורם סימון מפורש להחרגה, למשל למניעת כפל ספירה מול פירוט הכרטיס. "
         "עצם קיומן של עסקאות בכרטיס אינו מוכיח שהן מכסות את החיוב בעו״ש. "
-        "העברות, תנועות השקעה וזיכויים לא מזוהים ממתינים לבירור ואינם נספרים כהוצאה. "
+        "העברות נכנסות ויוצאות שטרם סווגו וזיכויים אחרים שלא זוהו ממתינים לבירור ואינם נספרים כהוצאה. העברה נכנסת אינה מזוהה אוטומטית כהעברה בין חשבונות. "
         "חיובים ממתינים וסכומים חסרים אינם כלולים. עמלות המרת מטבע קטנות נרשמות כעמלות בנק; עמלות כרטיס ללא סכום ותנועות בחשבון ההשקעות אינן דורשות בירור. סימון אישי כהוצאה גובר על סיווג זה; זיכוי שסומן כהוצאה מפחית את הסכום. "
         "הסכומים בטבלה מעוגלים לתצוגה בלבד; הסכום המדויק מופיע בהצבעה על מספר. "
         "מטבע זר מומר לפי השער היציג האחרון שפרסם בנק ישראל עד סוף חודש העסקה. "

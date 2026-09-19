@@ -1109,7 +1109,7 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(200))
         self.assertEqual(
             {r["id"] for r in summary["flagged_for_review"]},
-            {"transfer", "investment"},
+            {"transfer"},
         )
         # Having card purchases (even with the same amount) does not establish
         # that this settlement is covered. Only an explicit exclusion does.
@@ -1175,8 +1175,8 @@ class ReportRegressionTests(unittest.TestCase):
         flagged = {
             r["id"] for r in summarize(snapshot, "2026-08")["flagged_for_review"]
         }
-        # A larger untagged conversion still awaits review.
-        self.assertEqual(flagged, {"conversion"})
+        # The conversion is a known non-expense; the small FX fee still counts.
+        self.assertEqual(flagged, set())
 
     def test_explicit_refund_reduces_spending_in_both_reports(self) -> None:
         snapshot = self.snapshot(
@@ -1234,8 +1234,8 @@ class ReportRegressionTests(unittest.TestCase):
         html = simple_report_html(snapshot)
         self.assertIn("<th>אשראי ללא פירוט</th>", html)
         self.assertEqual(html.count("title='ILS 25,000.50'"), 26)
-        # Four unresolved records per month; the included charge needs no review.
-        self.assertEqual(html.count("</span> (4)</td></tr>"), 12)
+        # Pending/missing debits need review; the known settlement credit does not.
+        self.assertEqual(html.count("</span> (3)</td></tr>"), 12)
 
     def test_confirmed_movements_and_duplicate_settlements_are_excluded(self) -> None:
         snapshot = self.snapshot(
@@ -1268,7 +1268,7 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertTrue(
             row.endswith("<td><span dir='ltr' title='ILS 0.00'>0.0</span> (0)</td>")
         )
-        # Missing source status must remain unresolved even after identification.
+        # An explicitly identified non-expense does not need classification again.
         snapshot["records"][3]["status"] = "UNKNOWN"
         row = (
             simple_report_html(snapshot, rules)
@@ -1276,7 +1276,71 @@ class ReportRegressionTests(unittest.TestCase):
             .split("</tr>")[0]
         )
         self.assertTrue(
-            row.endswith("<td><span dir='ltr' title='ILS 200.00'>0.2</span> (1)</td>")
+            row.endswith("<td><span dir='ltr' title='ILS 0.00'>0.0</span> (0)</td>")
+        )
+
+    def test_known_exclusions_do_not_inflate_review(self) -> None:
+        records = [
+            self.record("bank-in", category="TRANSFER", amount="217112"),
+            self.record(
+                "bit-in", category="TRANSFER", subcategory="BIT_PAYBOX", amount="1078"
+            ),
+            self.record(
+                "pending-in", category="TRANSFER", status="PENDING", amount="80000"
+            ),
+            self.record("investment", category="TRADING", amount="-50000"),
+            self.record("missing-investment", category="TRADING", amount=None),
+            self.record(
+                "card-credit", subcategory="CREDIT_CARD_CHECKING", amount="2521.61"
+            ),
+            self.record("known-transfer", status="UNKNOWN", amount="-90000"),
+            self.record("known-income", status="PENDING", amount="70000"),
+            self.record("known-gift", amount=None),
+            self.record(
+                "card-debit", subcategory="CREDIT_CARD_CHECKING", amount="-100"
+            ),
+            self.record("unknown-credit", amount="25"),
+            self.record("outgoing", category="TRANSFER", amount="-75"),
+            self.record("unidentified-incoming", category="TRANSFER", amount="1000"),
+            self.record("missing", amount=None),
+        ]
+        rules = [
+            LiveTagRule(tag=tag, account_id="account-1", record_id=identity)
+            for identity, tag in (
+                ("known-transfer", "self_transfer"),
+                ("known-income", "income"),
+                ("known-gift", "gift"),
+                ("bank-in", "self_transfer"),
+                ("bit-in", "gift"),
+                ("pending-in", "self_transfer"),
+            )
+        ]
+        snapshot = self.snapshot(records)
+        summary = summarize(snapshot, "2026-08", rules)
+        self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(100))
+        self.assertEqual(summary["reconciled"]["ILS"]["income"], Decimal(0))
+        self.assertEqual(
+            summary["reconciled"]["ILS"]["breakdown"]["unresolved_transfer"]["count"], 2
+        )
+        self.assertEqual(
+            {r["id"] for r in summary["flagged_for_review"]},
+            {"unknown-credit", "outgoing", "unidentified-incoming", "missing"},
+        )
+        html = simple_report_html(snapshot, rules)
+        for label, count in (
+            ("אוגוסט 2026", "4"),
+            ("<strong>ממוצע חודשי</strong>", "4.0"),
+        ):
+            row = html.split(f"<td>{label}</td>")[1].split("</tr>")[0]
+            self.assertTrue(
+                row.endswith(f"title='ILS 1,100.00'>1.1</span> ({count})</td>")
+            )
+        # An explicit expense/refund decision still takes priority when booked.
+        snapshot = self.snapshot([records[1], records[3], records[5]])
+        override = [LiveTagRule(tag="expense", account_id="account-1")]
+        self.assertEqual(
+            summarize(snapshot, "2026-08", override)["reconciled"]["ILS"]["spend"],
+            Decimal("46400.39"),
         )
 
     def test_insurance_increase_unknown_and_missing_amount_are_reviewed(self) -> None:

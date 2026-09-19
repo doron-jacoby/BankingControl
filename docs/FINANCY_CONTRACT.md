@@ -117,7 +117,11 @@ overrides take precedence; settlement, transfer and return labels are counted fo
 review. Per the user's expense policy, untagged BOOKED settlement debits count
 as card expenses without itemized details. Explicit saved exclusions prevent
 double counting confirmed matches; amount equality alone is not a verified match.
-Untagged transfer/investment movements are withheld until resolved.
+Investment movements and card settlement credits are excluded
+from spending and review. Unclassified incoming/outgoing transfers and other unidentified credits remain
+withheld for review. Explicit non-expense tags do not require repeat classification
+when the source status or amount is missing. Card settlement debits still count as
+expenses unless explicitly excluded.
 `finance report` writes a Hebrew HTML report with mode 0600; missing public
 month-end exchange rates are fetched once, then report generation works offline;
 `--detailed` selects the English diagnostic tables.

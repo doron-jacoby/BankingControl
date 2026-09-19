@@ -57,7 +57,7 @@ arithmetic before display rounding. Diagnostics retain original currencies.
 Categories are food, shopping, domestic transport, education, health/insurance,
 leisure, bank fees, overseas travel, Other and Unidentified. Bank fees include
 Financy fee labels and untagged foreign-exchange debits under 100 in the charged
-currency (larger conversions still await review). Card fees without an amount
+currency (larger conversions are excluded as investment movements). Card fees without an amount
 and investment-account movements are not listed for review. HaKfar HaYarok charges are
 Education, including the user-confirmed school name found in bank descriptions;
 only its canonical name is retained. תחנת החוף המנהרה charges are domestic
@@ -72,9 +72,13 @@ Bank card settlement debits count as expenses under **אשראי ללא פירו
 an explicit saved tag excludes them (for example, a confirmed duplicate of card
 purchases). Having some card purchases does not prove a settlement is covered.
 This default applies to every imported month, including history.
-Identified spending excludes unresolved transfers,
-investment movements, credits, incomplete statuses and missing amounts. These
-remain visible for review. A label is a reason to withhold a movement, not proof
+Identified spending excludes transfers awaiting classification,
+investment movements, credits, incomplete statuses and missing amounts.
+Transfers in either direction require review unless already classified; an incoming
+transfer alone does not identify a movement between the user's own accounts.
+Investment movements, card settlement credits, and explicit self-transfer/gift/income
+tags are also known exclusions, not review items, even with incomplete source data.
+Other unresolved movements remain visible for review. A label is a reason to withhold a movement, not proof
 of a matched transfer. Explicit `expense` tags override the withholding; a
 positive amount tagged as expense reduces spending (a confirmed refund).
 `self_transfer`, `gift` and `income` retain their manual meanings.
