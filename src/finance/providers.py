@@ -2,9 +2,75 @@
 
 from copy import deepcopy
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
-from finance.models import Account, ProviderTransaction, require_aware
+from finance.models import (
+    Account,
+    ProviderTransaction,
+    TransactionStatus,
+    require_aware,
+)
+
+
+class ProviderError(RuntimeError):
+    """Safe provider error codes; adapters must discard raw response messages."""
+
+    def __init__(self, code: str = "transient") -> None:
+        if code not in {"transient", "authentication", "validation"}:
+            code = "validation"
+        self.code = code
+        super().__init__(code)
+
+
+def normalize_demo_record(payload: dict[str, object]) -> ProviderTransaction:
+    """Our synthetic fixture format, NOT a claimed Financy payload contract.
+
+    No whole response is retained. Only the allowlisted pending link is copied.
+    Real provider normalization awaits its published contract and sign semantics.
+    """
+    try:
+        amount = payload["amount"]
+        timestamp = payload["date"]
+        account_id = payload["account_id"]
+        currency = payload["currency"]
+        description = payload["description"]
+        transaction_id = payload.get("id")
+        merchant = payload.get("merchant")
+        pending_id = payload.get("pending_id")
+        status = payload.get("status", "posted")
+        if not all(
+            isinstance(value, str)
+            for value in (amount, timestamp, account_id, currency, description)
+        ):
+            raise ValueError
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in (transaction_id, merchant, pending_id)
+        ):
+            raise ValueError
+        # Individual checks give the type checker the narrowed types as well.
+        assert isinstance(amount, str) and isinstance(timestamp, str)
+        assert isinstance(account_id, str) and isinstance(currency, str)
+        assert isinstance(description, str)
+        assert transaction_id is None or isinstance(transaction_id, str)
+        assert merchant is None or isinstance(merchant, str)
+        assert pending_id is None or isinstance(pending_id, str)
+        if not isinstance(status, str):
+            raise ValueError
+        return ProviderTransaction(
+            provider_account_id=account_id,
+            provider_transaction_id=transaction_id,
+            transaction_date=datetime.fromisoformat(timestamp),
+            amount=Decimal(amount),
+            currency=currency,
+            original_description=description,
+            merchant=merchant,
+            status=TransactionStatus(status),
+            raw_metadata={"pending_transaction_id": pending_id} if pending_id else {},
+        )
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise ProviderError("validation") from None
 
 
 class FinanceProvider(Protocol):
