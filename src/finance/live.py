@@ -490,6 +490,22 @@ def _car_wash_merchant(value: str) -> bool:
     return any(name in normalized for name in ("תחנת החוף המנהרה",))
 
 
+def _pango_merchant(value: str) -> bool:
+    # Pango parking and "מ.תחבורה - פנגו מוביט" (filed as GOVERNMENT SERVICES) are car costs.
+    return "פנגו" in value or "PANGO" in value.upper()
+
+
+def _games_merchant(value: str) -> bool:
+    # Financy files Steam under SHOPPING/SHOPPING_OTHER; it is games (leisure).
+    normalized = " ".join(re.findall(r"[\w]+", value.upper()))
+    return any(name in normalized for name in ("STEAMGAMES", "STEAM GAMES"))
+
+
+def _esta_merchant(value: str) -> bool:
+    # US ESTA fees arrive as UNCATEGORIZED/GOVERNMENT SERVICES; they are travel.
+    return "ESTA" in re.findall(r"[\w]+", value.upper())
+
+
 def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecord:
     """Keep only report fields and IDs; discard descriptions and account numbers."""
     try:
@@ -838,8 +854,12 @@ def _general_category(
 ) -> str:
     if _school_merchant(merchant):
         return "חינוך"
-    if _car_wash_merchant(merchant):
+    if _car_wash_merchant(merchant) or _pango_merchant(merchant):
         return "תחבורה בארץ"
+    if _games_merchant(merchant):
+        return "פנאי"
+    if _esta_merchant(merchant):
+        return GENERAL_CATEGORIES[-1][0]
     tokens = _tokens(f"{category} {subcategory}")
     travel_label, travel_words = GENERAL_CATEGORIES[-1]
     transport_words = GENERAL_CATEGORIES[2][1]

@@ -212,6 +212,37 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(august["categories"]["תחבורה בארץ"], Decimal("19.90"))
         self.assertNotIn("מזון", august["categories"])
 
+    def test_pango_government_services_charge_is_domestic_transport(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(
+                merchantName="מ.תחבורה - פנגו מוביט",
+                category={"main": "UNCATEGORIZED", "sub": "GOVERNMENT SERVICES"},
+            )
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["תחבורה בארץ"], Decimal("19.90"))
+
+    def test_steam_is_leisure_and_esta_is_overseas_travel(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(
+                merchantName="STEAMGAMES.COM 4259522985",
+                category={"main": "SHOPPING", "sub": "SHOPPING_OTHER"},
+            ),
+            row(
+                "two",
+                merchantName="USCUSTOMS ESTA APPL PMT",
+                category={"main": "UNCATEGORIZED", "sub": "GOVERNMENT SERVICES"},
+            ),
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["פנאי"], Decimal("19.90"))
+        self.assertEqual(august["categories"]["טיולים בחו״ל"], Decimal("19.90"))
+        self.assertNotIn("קניות", august["categories"])
+
     def test_cli_uses_frozen_rates_after_resync_and_retains_report_on_failure(
         self,
     ) -> None:

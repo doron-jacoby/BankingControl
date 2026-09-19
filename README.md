@@ -59,7 +59,9 @@ leisure, overseas travel, Other and Unidentified. HaKfar HaYarok charges are
 Education, including the user-confirmed school name found in bank descriptions;
 only its canonical name is retained. תחנת החוף המנהרה charges are domestic
 transport (a user-confirmed car wash), despite Financy's FOOD_&_DRINKS/RESTAURANT
-category. There is no housing category. Unidentified
+category, and so are all Pango charges, including "מ.תחבורה - פנגו מוביט", which
+Financy files under GOVERNMENT SERVICES. Steam (STEAMGAMES) charges are leisure (games) rather than shopping,
+and US ESTA fees are overseas travel. There is no housing category. Unidentified
 expenses follow Other and are included in the **total excluding overseas travel**;
 travel is the next column. Unresolved non-expense movements remain separate.
 Flights go to overseas travel; transport with a foreign merchant country goes
