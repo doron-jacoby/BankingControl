@@ -170,7 +170,7 @@ class LiveTests(unittest.TestCase):
         self.sync()
         snapshot = load_snapshot(self.path, self.store)
         august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
-        self.assertEqual(august["categories"]["תחבורה בארץ"], Decimal("19.90"))
+        self.assertEqual(august["categories"]["רכב ותחבורה"], Decimal("19.90"))
         self.assertNotIn("מזון", august["categories"])
 
     def test_cli_uses_frozen_rates_after_resync_and_retains_report_on_failure(
@@ -690,7 +690,7 @@ class LiveTrendTests(unittest.TestCase):
         self.assertEqual(august["categories"]["אחר"], Decimal("15"))
         self.assertEqual(august["total"], Decimal("135"))
         july = trend["currencies"]["ILS"]["2026-07"]
-        self.assertEqual(july["categories"]["תחבורה בארץ"], Decimal("300"))
+        self.assertEqual(july["categories"]["רכב ותחבורה"], Decimal("300"))
 
     def test_self_transfer_tag_excludes_it_from_the_trend(self) -> None:
         rule = LiveTagRule(
@@ -898,14 +898,14 @@ class ReportRegressionTests(unittest.TestCase):
 
     def test_category_boundaries_travel_and_subscription_subject(self) -> None:
         cases = [
-            ("HEALTH", "HEALTHCARE", "", "בריאות וביטוח"),
+            ("HEALTH", "HEALTHCARE", "", "בריאות"),
             ("HOME", "RENT", "", "אחר"),
             ("TRANSPORT", "FLIGHTS", "", "טיולים בחו״ל"),
             ("TRANSPORT", "PUBLIC_TRANSPORT", "US", "טיולים בחו״ל"),
-            ("TRANSPORT", "CAR_&_FUEL", "IL", "תחבורה בארץ"),
+            ("TRANSPORT", "CAR_&_FUEL", "IL", "רכב ותחבורה"),
             ("SUBSCRIPTIONS", "INTERNET", "", "אחר"),
             ("SUBSCRIPTIONS", "FITNESS", "", "פנאי"),
-            ("HEALTHCARE", "SUBSCRIPTION", "", "בריאות וביטוח"),
+            ("HEALTHCARE", "SUBSCRIPTION", "", "בריאות"),
             ("SUBSCRIPTIONS", "UNKNOWN", "", "לא מזוהה"),
             ("OTHER", "BARGAIN", "", "אחר"),
             ("OTHER", "OTHER", "", "לא מזוהה"),
@@ -919,6 +919,52 @@ class ReportRegressionTests(unittest.TestCase):
                 self.assertEqual(
                     _general_category(category, subcategory, country), expected
                 )
+
+    def test_insurance_is_separate_from_health_without_changing_totals(self) -> None:
+        records = [
+            self.record(
+                "car-policy",
+                category="HOUSEHOLD_&_SERVICES",
+                subcategory="INSURANCE_&_FEES",
+                merchant="ביטוח רכב",
+            ),
+            self.record(
+                "home-policy",
+                category="HOUSEHOLD_&_SERVICES",
+                subcategory="INSURANCE_&_FEES",
+                merchant="ביטוח דירה",
+            ),
+            self.record("medical", category="HEALTH", subcategory="HEALTHCARE"),
+            self.record(
+                "garage",
+                category="TRANSPORT",
+                subcategory="CAR_&_FUEL",
+                merchant="אדיר שירותי רכב",
+            ),
+        ]
+        snapshot = self.snapshot(records)
+        month = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(
+            month["categories"],
+            {
+                "ביטוח": Decimal(200),
+                "בריאות": Decimal(100),
+                "רכב ותחבורה": Decimal(100),
+            },
+        )
+        self.assertEqual(month["total"], Decimal(400))
+        self.assertEqual(month["total_excluding_travel"], Decimal(400))
+        html = simple_report_html(snapshot)
+        self.assertIn("<th>בריאות</th><th>ביטוח</th>", html)
+        self.assertNotIn("בריאות וביטוח", html)
+        for category, subcategory, expected in (
+            ("HEALTH", "INSURANCE", "ביטוח"),
+            ("INSURANCE", "HEALTHCARE", "ביטוח"),
+            ("TRANSPORT", "CAR_INSURANCE", "ביטוח"),
+            ("INSURANCE", "TRAVEL_INSURANCE", "טיולים בחו״ל"),
+        ):
+            with self.subTest(category=category, subcategory=subcategory):
+                self.assertEqual(_general_category(category, subcategory), expected)
 
     def test_bold_non_travel_total_includes_unidentified_and_precedes_travel(
         self,

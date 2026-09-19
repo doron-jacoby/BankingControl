@@ -99,7 +99,7 @@ GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "תחבורה בארץ",
+        "רכב ותחבורה",
         (
             "TRANSPORT",
             "TRANSPORTATION",
@@ -127,13 +127,12 @@ GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "בריאות וביטוח",
+        "בריאות",
         (
             "HEALTH",
             "HEALTHCARE",
             "MEDICAL",
             "PHARMACY",
-            "INSURANCE",
             "DOCTOR",
             "DENTAL",
             "CLINIC",
@@ -141,6 +140,7 @@ GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "BEAUTY",
         ),
     ),
+    ("ביטוח", ("INSURANCE",)),
     (
         "פנאי",
         (
@@ -710,7 +710,7 @@ def _general_category(
     if _school_merchant(merchant):
         return "חינוך"
     if _car_wash_merchant(merchant):
-        return "תחבורה בארץ"
+        return "רכב ותחבורה"
     tokens = _tokens(f"{category} {subcategory}")
     travel_label, travel_words = GENERAL_CATEGORIES[-1]
     transport_words = GENERAL_CATEGORIES[2][1]
@@ -729,6 +729,9 @@ def _general_category(
         abroad and tokens.intersection((*transport_words, "HOTEL", "HOTELS", "LODGING"))
     ):
         return travel_label
+    # Broad insurance labels do not identify the policy as health coverage.
+    if "INSURANCE" in tokens:
+        return "ביטוח"
     for source in (subcategory, category):
         source_tokens = _tokens(source)
         for category_label, keywords in GENERAL_CATEGORIES[:-1]:
