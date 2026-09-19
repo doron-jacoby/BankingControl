@@ -3,18 +3,32 @@
 import argparse
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from finance.analytics import AnalyticsService
 from finance.classification import FLAGS, MATCH_TYPES, backfill, save_rule
 from finance.demo import MonthlyDemoProvider
+from finance.exchange import ExchangeRateError, ensure_month_end_rates
 from finance.financy import (
     Credentials,
     FinancyClient,
     FinancyError,
     connect_interactively,
+)
+from finance.live import (
+    TAGS,
+    LiveTagRule,
+    general_category_trend,
+    load_snapshot,
+    load_tag_rules,
+    save_tag_rule,
+    summarize,
+    sync_snapshot,
+    write_report,
+    write_simple_report,
 )
 from finance.models import Category, ClassificationRule, utc_now
 from finance.repository import accounts, transactions
@@ -31,7 +45,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--data-dir", type=Path, help="Private local data directory")
     result.add_argument("--overlap-days", type=int, default=7)
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("sync")
+    sync = commands.add_parser("sync")
+    sync.add_argument("--from", dest="start", type=date.fromisoformat)
+    sync.add_argument("--to", dest="end", type=date.fromisoformat)
     commands.add_parser("status")
     commands.add_parser("accounts")
     commands.add_parser("connect", help="Save and verify Financy credentials locally")
@@ -40,6 +56,35 @@ def parser() -> argparse.ArgumentParser:
     monthly = commands.add_parser("monthly")
     monthly.add_argument("month", help="YYYY-MM")
     monthly.add_argument("--timezone", default="Asia/Jerusalem")
+    report = commands.add_parser("report", help="Write a local provisional live report")
+    report.add_argument("--output", type=Path)
+    report.add_argument(
+        "--detailed",
+        action="store_true",
+        help="Export the detailed English diagnostic report",
+    )
+    report.add_argument(
+        "--simple",
+        action="store_true",
+        help="Short Hebrew monthly spend-by-category trend and flagged charges",
+    )
+    tag = commands.add_parser(
+        "tag", help="Save a manual reconciliation rule for live records"
+    )
+    tag.add_argument("tag_value", choices=sorted(TAGS))
+    tag.add_argument(
+        "--account-id", help="Scopes the rule; required alongside --record-id"
+    )
+    tag.add_argument(
+        "--record-id", help="Match one specific record; needs --account-id"
+    )
+    tag.add_argument("--category", help="Match Financy's category label")
+    tag.add_argument("--subcategory", help="Match Financy's subcategory label")
+    tag.add_argument(
+        "--note", default="", help="Local reminder of why, never sent anywhere"
+    )
+    tag.add_argument("--priority", type=int, default=0)
+    commands.add_parser("tags", help="List saved live reconciliation rules")
     classify = commands.add_parser("classify")
     scope = classify.add_mutually_exclusive_group(required=True)
     scope.add_argument("--all", action="store_true")
@@ -75,8 +120,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     path, key_name = runtime_paths(args)
     if not args.demo:
-        return live_command(args.command)
+        return live_command(args, path)
     try:
+        if args.command in {"report", "tag", "tags"} or (
+            args.command == "sync" and (args.start or args.end)
+        ):
+            emit(
+                {
+                    "error": "Report export, tagging and sync date filters are for live data."
+                }
+            )
+            return 2
         if args.command == "connect":
             emit({"error": "Use finance connect without --demo for Financy setup."})
             return 2
@@ -193,13 +247,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def live_command(command: str) -> int:
-    if command not in {"connect", "accounts", "status"}:
+def live_command(args: argparse.Namespace, path: Path) -> int:
+    command = args.command
+    if command not in {
+        "connect",
+        "accounts",
+        "status",
+        "sync",
+        "monthly",
+        "report",
+        "tag",
+        "tags",
+    }:
         emit(
             {
                 "status": "contract_incomplete",
-                "message": "Live account discovery is available. Transaction import and live worker "
-                "remain disabled pending verified status/reconciliation and Conductor contracts.",
+                "message": "Use sync, monthly, report, tag or tags for provisional live "
+                "analysis. Reconciled expense totals and the live worker remain unavailable.",
             }
         )
         return 2
@@ -207,16 +271,108 @@ def live_command(command: str) -> int:
         store = MacOSKeychain()
         if command == "connect":
             emit(connect_interactively(store))
+        elif command in {"monthly", "report", "tag", "tags"}:
+            if not path.exists():
+                emit({"status": "not_imported", "message": "Run finance sync first."})
+                return 1
+            if command == "tag":
+                try:
+                    rule = LiveTagRule(
+                        tag=args.tag_value,
+                        account_id=args.account_id,
+                        record_id=args.record_id,
+                        category=args.category,
+                        subcategory=args.subcategory,
+                        note=args.note,
+                        priority=args.priority,
+                    )
+                    with open_database(load_database_key(store), path) as db:
+                        save_tag_rule(db, rule)
+                except ValueError as error:
+                    emit(
+                        {
+                            "status": "failed",
+                            "error": "validation",
+                            "message": str(error),
+                        }
+                    )
+                    return 2
+                emit(
+                    {
+                        "status": "saved",
+                        "message": "Run finance monthly or report to apply it.",
+                    }
+                )
+            elif command == "tags":
+                with open_database(load_database_key(store), path) as db:
+                    emit([asdict(rule) for rule in load_tag_rules(db)])
+            else:
+                snapshot = load_snapshot(path, store)
+                with open_database(load_database_key(store), path) as db:
+                    rules = load_tag_rules(db)
+                if command == "monthly":
+                    if args.timezone != "Asia/Jerusalem":
+                        emit(
+                            {
+                                "error": "Live source dates have no time; timezone conversion is unavailable."
+                            }
+                        )
+                        return 2
+                    emit(summarize(snapshot, args.month, rules))
+                elif not args.detailed:
+                    output = args.output or path.parent / "monthly-overview.html"
+                    months = set(general_category_trend(snapshot, rules)["months"])
+                    pairs = {
+                        (r["currency"], r["day"][:7])
+                        for r in snapshot["records"]
+                        if r["currency"] != "ILS"
+                        and r["amount"] is not None
+                        and r["day"][:7] in months
+                    }
+                    with open_database(load_database_key(store), path) as db:
+                        rates = ensure_month_end_rates(db, pairs)
+                    write_simple_report(snapshot, output, rules, rates)
+                    emit(
+                        {
+                            "status": "completed",
+                            "analysis": "provisional",
+                            "report": str(output),
+                        }
+                    )
+                else:
+                    output = args.output or path.parent / "analysis.html"
+                    write_report(snapshot, output, rules)
+                    emit(
+                        {
+                            "status": "completed",
+                            "analysis": "provisional",
+                            "report": str(output),
+                        }
+                    )
         else:
             client = FinancyClient(Credentials.load(store))
             if command == "accounts":
                 emit([asdict(account) for account in client.list_accounts()])
+            elif command == "sync":
+                end = (
+                    args.end or utc_now().astimezone(ZoneInfo("Asia/Jerusalem")).date()
+                )
+                month_index = end.year * 12 + end.month - 1 - 12
+                start = args.start or date(month_index // 12, month_index % 12 + 1, 1)
+                output = sync_snapshot(client, path, store, start, end)
+                emit(output)
             else:
                 emit(
                     {
                         "provider": "financy",
                         "api_access": "verified",
-                        "live_import_enabled": False,
+                        "live_import_enabled": True,
+                        "analysis": "provisional",
+                        "reconciled_expenses_enabled": False,
+                        "encrypted_db_available": path.exists(),
+                        "snapshot": load_snapshot(path, store)["info"]
+                        if path.exists()
+                        else None,
                         **client.connection_summary(),
                         "account_count": len(client.list_accounts()),
                     }
@@ -232,8 +388,17 @@ def live_command(command: str) -> int:
             }
         )
         return 1
-    except (SecretError, OSError, ValueError):
-        emit({"status": "failed", "error": "local_configuration_or_storage"})
+    except ExchangeRateError as error:
+        emit({"status": "failed", "error": "exchange_rate", "message": str(error)})
+        return 1
+    except (SecretError, StorageError, OSError, ValueError):
+        emit(
+            {
+                "status": "failed",
+                "error": "local_configuration_or_storage",
+                "message": "Check date range, snapshot coverage, Keychain and private database permissions.",
+            }
+        )
         return 1
     except (EOFError, KeyboardInterrupt):
         return 130

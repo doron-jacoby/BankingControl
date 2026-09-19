@@ -1,8 +1,8 @@
-"""Verified Financy API 1.0.0 authentication and read-only account discovery.
+"""Financy authentication, account discovery and read-only transaction retrieval.
 
 Contract: docs-financy.open-finance.ai/reference/{createtoken,getaccounts,
-getconnections}. Transaction status semantics remain unverified; this client
-does not guess a FinanceProvider transaction mapping.
+getconnections,gettransactions}. Source statuses are preserved for provisional
+analysis; this client does not guess a FinanceProvider transaction mapping.
 """
 
 import getpass
@@ -16,6 +16,7 @@ import tty
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -24,7 +25,7 @@ from finance.security import SERVICE, SecretStore
 
 CREDENTIAL_NAME = "financy-credentials-v1"
 API_HOST = "api.open-finance.ai"
-READ_PATHS = {"/v2/connections", "/v2/data/accounts"}
+READ_PATHS = {"/v2/connections", "/v2/data/accounts", "/v2/data/transactions"}
 READABLE_STATUSES = {"ACTIVE", "CONNECTED", "COMPLETED"}
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
@@ -193,7 +194,9 @@ class FinancyClient:
             time.monotonic() + float(min(expiry, 86_400_000)) / 1000 * 0.9
         )
 
-    def _pages(self, path: str) -> list[dict[str, Any]]:
+    def _pages(
+        self, path: str, filters: dict[str, str] | None = None
+    ) -> list[dict[str, Any]]:
         from urllib.parse import urlencode
 
         if path not in READ_PATHS:
@@ -202,8 +205,8 @@ class FinancyClient:
         cursor: str | None = None
         seen: set[str] = set()
         while True:
-            query = {"limit": "100"}
-            if path == "/v2/data/accounts":
+            query = dict(filters) if filters is not None else {"limit": "100"}
+            if path in {"/v2/data/accounts", "/v2/data/transactions"}:
                 query["includeDuplicates"] = "0"
             if cursor is not None:
                 query["nextPage"] = cursor
@@ -263,6 +266,16 @@ class FinancyClient:
         # accountName/accountNumber, ownerInfo, card details and balances are
         # deliberately not retained; labels must not accidentally contain a PAN.
         return result
+
+    def transaction_rows(self, start: date, end: date) -> list[dict[str, Any]]:
+        if start > end:
+            raise FinancyError("validation", detail="Date range must be ordered")
+        # The reference forbids combining date filters with limit. Retain the
+        # filters on every cursor page and also check isDuplicate locally.
+        return self._pages(
+            "/v2/data/transactions",
+            {"dateFrom": start.isoformat(), "dateTo": end.isoformat()},
+        )
 
     def connection_summary(self) -> dict[str, int]:
         rows = self._pages("/v2/connections")

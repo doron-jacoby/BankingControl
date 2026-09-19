@@ -37,8 +37,8 @@ class CLITests(unittest.TestCase):
                         self.assertTrue(data)
                     self.assertNotIn(key, output.getvalue())
 
-    def test_live_mode_requires_contract_and_missing_demo_is_clear(self) -> None:
+    def test_live_worker_requires_contract_and_missing_demo_is_clear(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main(["sync"]), 2)
+            self.assertEqual(main(["worker"]), 2)
             with tempfile.TemporaryDirectory() as directory:
                 self.assertEqual(main(["--demo", "--data-dir", directory, "status"]), 1)

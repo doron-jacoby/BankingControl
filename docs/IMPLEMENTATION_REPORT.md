@@ -4,10 +4,29 @@ The specification was copied unchanged from Downloads into the repository.
 Implementation proceeded phase by phase, extending the scope after the request
 to build everything possible and provide guided installation.
 
-Update: the installer is now entirely English. Verified Financy API 1.0.0
-authentication and account discovery have been added with Keychain-only
-credentials; live transaction import still awaits documented status and
-reconciliation semantics. The updated suite has **67 passing tests**.
+Update: the English installer and Keychain-only credentials are unchanged.
+Live import now feeds a concise Hebrew report by default: twelve completed months,
+a single shekel table, education and an Unidentified category and the latest month's review list.
+Unresolved transfers, settlements, investments and credits are held separately
+from identified spending. Explicit expense credits reduce spending. Review now
+includes insurance, unknown charges, incomplete records, historical increases and
+same-month outliers. Missing months and partial coverage are visible.
+
+Regression checks cover those cases, category token boundaries, subscription
+subjects, overseas transport, leap/month ends, escaping and private report writes.
+Validation: **117 tests pass**, Ruff lint/format, strict mypy and diff checks pass.
+The installed runtime matches the workspace source. The live snapshot was
+refreshed for 2025-09-01 through 2026-09-19 (1,632 records), with an encrypted
+backup retained. All twelve monthly category sums agree with the monthly
+summaries. Private file permissions and database integrity were verified; the
+Hebrew report was inspected in Chrome.
+
+USD/EUR conversion uses frozen month-end Bank of Israel rates. Cache persistence,
+month-end/weekend selection, invalid-rate failures, multi-currency category sums,
+travel subtotals and school classification are covered by regression tests.
+
+Full automatic reconciliation remains unavailable without provider linkage and
+coverage evidence. Tests use synthetic records and fake credentials.
 
 ## Phase checkpoints
 
@@ -68,8 +87,9 @@ when the user runs it.
 
 ## Remaining external contracts
 
-Live v1 is not yet complete. The functioning import-to-report path is synthetic;
-authentication and account discovery now use the verified real API contract:
+Reconciled live v1 is not yet complete. Live import-to-report now supports an
+encrypted provisional snapshot and user-tagged reconciled totals, while fully
+automatic expense normalization (without a saved user rule) remains synthetic:
 
 1. Financy/Open Finance: transaction status values, history limits, pending/final
    reconciliation and settlement/statement coverage. The API version,
