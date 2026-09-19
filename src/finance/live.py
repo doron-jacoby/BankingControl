@@ -13,7 +13,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from html import escape
 from pathlib import Path
@@ -73,6 +73,9 @@ BANK_FEES_CATEGORY_LABEL = "עמלות בנק"
 # Conversions are tagged as own-account pairs; an untagged small FX debit is the fee.
 FX_FEE_LIMIT = Decimal(100)
 INVESTMENT_ACCOUNT_TYPES = {"investment", "savings"}
+# Financy filters on the purchase date, so installments charged inside the window
+# for purchases made up to this many years earlier are fetched separately.
+INSTALLMENT_LOOKBACK_YEARS = 5
 # Whole tokens only. Subcategory takes precedence over the broad source category.
 GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -236,6 +239,11 @@ class LiveRecord:
     merchant: str = ""
     merchant_country: str = ""
     recipient_name: str = ""
+    # Card purchases split into monthly payments: one row per payment, dated
+    # when it is charged. purchase_day is when the purchase itself was made.
+    installment_number: int | None = None
+    installment_total: int | None = None
+    purchase_day: str = ""
 
 
 def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
@@ -556,6 +564,25 @@ def _esta_merchant(value: str) -> bool:
     return "ESTA" in re.findall(r"[\w]+", value.upper())
 
 
+def _iso_day(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError
+    return date.fromisoformat(value).isoformat()
+
+
+def _installment(row: dict[str, Any]) -> tuple[int, int] | None:
+    """(payment number, payment count) when a card purchase is split into payments."""
+    value = row.get("installments")
+    if value is None:
+        return None
+    number, total = value["number"], value["total"]
+    if any(isinstance(n, bool) or not isinstance(n, int) for n in (number, total)):
+        raise ValueError
+    if not 1 <= number <= total <= 600:
+        raise ValueError
+    return (number, total) if total > 1 else None
+
+
 def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecord:
     """Keep only report fields and IDs; discard descriptions and account numbers."""
     try:
@@ -582,17 +609,23 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
         else:
             validate_money(amount, currency)
         dates = row["date"]
+        installment = _installment(row)
+        # Every payment carries the purchase date; count each one when charged.
         date_source = next(
             name
-            for name in ("transactionDate", "bookingDate", "valueDate")
+            for name in (
+                ("valueDate", "transactionDate", "bookingDate")
+                if installment
+                else ("transactionDate", "bookingDate", "valueDate")
+            )
             if dates.get(name)
         )
-        raw_day = dates[date_source]
-        if not isinstance(raw_day, str) or not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}", raw_day
-        ):
-            raise ValueError
-        day = date.fromisoformat(raw_day)
+        day = _iso_day(dates[date_source])
+        purchase_day = (
+            _iso_day(dates["transactionDate"])
+            if installment and dates.get("transactionDate")
+            else ""
+        )
         category = row.get("changedCategory") or row.get("category") or {}
         recipient = row.get("creditorName")
         if recipient is None:
@@ -619,7 +652,7 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             id=required_text(row, "id"),
             account_id=account_id,
             account_type=account.account_type,
-            day=day.isoformat(),
+            day=day,
             date_source=date_source,
             amount=str(amount) if amount is not None else None,
             currency=currency,
@@ -629,6 +662,9 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             merchant=merchant,
             merchant_country=country,
             recipient_name=recipient,
+            installment_number=installment[0] if installment else None,
+            installment_total=installment[1] if installment else None,
+            purchase_day=purchase_day,
         )
     except (
         KeyError,
@@ -662,15 +698,28 @@ def sync_snapshot(
         if len(account_map) != len(discovered):
             raise FinancyError("validation", detail="Duplicate account IDs")
         records: dict[tuple[str, str], LiveRecord] = {}
-        duplicates = outside_range = repeated = 0
-        for row in client.transaction_rows(start, end):
+        duplicates = outside_range = repeated = earlier_installments = 0
+        lookback = date(start.year - INSTALLMENT_LOOKBACK_YEARS, start.month, 1)
+        rows = [(row, False) for row in client.transaction_rows(start, end)] + [
+            (row, True)
+            for row in client.transaction_rows(lookback, start - timedelta(days=1))
+            if row.get("installments") is not None
+        ]
+        for row, earlier in rows:
             duplicate = row.get("isDuplicate", False)
             if not isinstance(duplicate, bool):
                 raise FinancyError("validation", detail="Invalid isDuplicate field")
             if duplicate:
-                duplicates += 1
+                if not earlier:
+                    duplicates += 1
                 continue
             record = normalize(row, account_map)
+            if earlier:
+                # Only payments on earlier purchases charged inside the window.
+                if not record.installment_total or not (
+                    start.isoformat() <= record.day <= end.isoformat()
+                ):
+                    continue
             identity = (record.account_id, record.id)
             if identity in records:
                 if records[identity] != record:
@@ -680,6 +729,7 @@ def sync_snapshot(
                 repeated += 1
                 continue
             records[identity] = record
+            earlier_installments += earlier
         selected = []
         for record in records.values():
             if start.isoformat() <= record.day <= end.isoformat():
@@ -698,6 +748,7 @@ def sync_snapshot(
             "duplicates_excluded": duplicates,
             "repeated_ids_excluded": repeated,
             "outside_range_excluded": outside_range,
+            "earlier_purchase_installments": earlier_installments,
             "source_status_counts": dict(Counter(r["status"] for r in selected)),
             "date_source_counts": dict(Counter(r["date_source"] for r in selected)),
             "missing_amount_count": sum(r["amount"] is None for r in selected),
@@ -808,6 +859,15 @@ def _is_standing_order(record: dict[str, Any]) -> bool:
     return bool(record["subcategory"] == "DIRECT_DEBIT")
 
 
+def _is_card_installment(record: dict[str, Any]) -> bool:
+    return bool(record.get("installment_total"))
+
+
+def _is_fixed_payment(record: dict[str, Any]) -> bool:
+    """Bank standing orders and card purchases paid in fixed monthly payments."""
+    return _is_standing_order(record) or _is_card_installment(record)
+
+
 def recurring_merchants(
     records: Sequence[dict[str, Any]], rules: Sequence[LiveTagRule] = ()
 ) -> set[str]:
@@ -821,7 +881,7 @@ def recurring_merchants(
         merchant = record.get("merchant") or ""
         if not merchant or record["amount"] is None:
             continue
-        if _is_fee(record) or _is_insurance(record) or _is_standing_order(record):
+        if _is_fee(record) or _is_insurance(record) or _is_fixed_payment(record):
             continue
         amount = Decimal(record["amount"])
         reason, included = _reconcile_reason(record, amount, resolve_tag(record, rules))
@@ -991,6 +1051,13 @@ def _latest_reviewable_month(info: dict[str, Any]) -> str:
     return _previous_month_key(end)
 
 
+def _installment_label(number: int, total: int, purchase_day: str) -> str:
+    text = f"תשלום {number} מתוך {total}"
+    if purchase_day:
+        text += f" · נרכש {purchase_day[8:]}.{purchase_day[5:7]}.{purchase_day[:4]}"
+    return text
+
+
 def _hebrew_month_label(month_key: str) -> str:
     year, month = month_key.split("-")
     return f"{HEBREW_MONTHS[int(month)]} {year}"
@@ -1102,12 +1169,21 @@ def expense_subjects(
                     "total": Decimal(0),
                     "days": [],
                     "account_ids": set(),
+                    "installments": [],
                 },
             )
             bucket["count"] += 1
             bucket["total"] -= amount
             bucket["days"].append(record["day"])
             bucket["account_ids"].add(record["account_id"])
+            if _is_card_installment(record):
+                bucket["installments"].append(
+                    (
+                        record["installment_number"],
+                        record["installment_total"],
+                        record.get("purchase_day", ""),
+                    )
+                )
     return sorted(groups.values(), key=lambda item: item["total"], reverse=True)
 
 
@@ -1694,7 +1770,7 @@ def simple_report_html(
     )
 
     def is_subscription(record: dict[str, Any]) -> bool:
-        if _is_fee(record) or _is_insurance(record) or _is_standing_order(record):
+        if _is_fee(record) or _is_insurance(record) or _is_fixed_payment(record):
             return False
         return (
             record["category"] == "SUBSCRIPTIONS"
@@ -1705,7 +1781,7 @@ def simple_report_html(
         ("עמלות", _is_fee),
         ("ביטוחים", _is_insurance),
         ("מנויים וחיובים חוזרים", is_subscription),
-        ("הוראות קבע", _is_standing_order),
+        ("הוראות קבע ותשלומים", _is_fixed_payment),
     )
     top_monthly_totals = {
         top_label: _predicate_monthly_totals(
@@ -1748,7 +1824,12 @@ def simple_report_html(
                     "<th>מספר חיובים</th><th>סכום</th><th>תאריכים</th><th>חשבון</th>"
                     "</tr></thead><tbody>"
                     + "".join(
-                        f"<tr><td>{escape(item['subject'])}</td>"
+                        f"<tr><td>{escape(item['subject'])}"
+                        + "".join(
+                            f"<br><small>{escape(_installment_label(*payment))}</small>"
+                            for payment in sorted(item["installments"])
+                        )
+                        + "</td>"
                         f"<td>{item['count']}</td>"
                         f"<td>{full_money(item['total'])}</td>"
                         f"<td dir='ltr'>{escape(', '.join(sorted(day[8:] + '/' + day[5:7] for day in item['days'])))}</td>"
@@ -1771,13 +1852,15 @@ def simple_report_html(
                 + top_lists_html
             )
     top_categories_section = (
-        "<section><h2>עמלות, ביטוחים, מנויים והוראות קבע</h2>"
+        "<section><h2>עמלות, ביטוחים, מנויים, הוראות קבע ותשלומים</h2>"
         "<p>מגמה חודשית, ועשרת הפריטים היקרים ביותר מכל סוג בחודש האחרון שהסתיים "
         f"({escape(_hebrew_month_label(last_month))}), מסודרים מהיקר לזול. "
         "הסכומים בסעיף זה בשקלים מלאים, לא באלפים.</p>"
         "<p class='note'>Financy לא מסמן מנויים, ולכן ״מנויים וחיובים חוזרים״ הם הערכה: "
         "בית עסק שחויב בערך פעם בחודש, בסכום יציב, ב-3 חודשים לפחות. "
-        "להוראות קבע Financy לא מוסר שם מוטב, ולכן הן מזוהות לפי תאריך וחשבון.</p>"
+        "להוראות קבע Financy לא מוסר שם מוטב, ולכן הן מזוהות לפי תאריך וחשבון. "
+        "רכישה בכרטיס אשראי בתשלומים נספרת כאן, וכל תשלום נספר בחודש שבו חויב, "
+        "גם כשהרכישה עצמה נעשתה לפני תחילת התקופה.</p>"
         "<div class='scroll'><table><thead><tr><th>חודש</th>"
         + "".join(f"<th>{escape(top_label)}</th>" for top_label, _ in top_category_defs)
         + "</tr></thead><tbody>"

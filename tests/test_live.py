@@ -23,7 +23,9 @@ from finance.live import (
     PDFExportError,
     _display_money,
     _general_category,
+    _is_card_installment,
     _is_fee,
+    _is_fixed_payment,
     _is_insurance,
     _is_standing_order,
     _latest_reviewable_month,
@@ -149,8 +151,12 @@ class LiveTests(unittest.TestCase):
         ):
             base = ["--data-dir", str(self.path.parent)]
             self.assertEqual(main(base + ["sync"]), 0)
-            self.client.transaction_rows.assert_called_once_with(
-                date(2025, 9, 1), date(2026, 9, 19)
+            self.assertEqual(
+                self.client.transaction_rows.call_args_list,
+                [
+                    ((date(2025, 9, 1), date(2026, 9, 19)),),
+                    ((date(2020, 9, 1), date(2025, 8, 31)),),
+                ],
             )
             self.assertEqual(main(base + ["report"]), 0)
             self.assertEqual(main(base + ["report", "--detailed"]), 0)
@@ -357,6 +363,75 @@ class LiveTests(unittest.TestCase):
         self.store = FakeSecretStore()
         with self.assertRaises(SecretError):
             self.sync()
+
+    def test_installments_count_when_charged_including_earlier_purchases(
+        self,
+    ) -> None:
+        def installment(
+            identity: str, purchase: str, charged: str, number: int
+        ) -> dict[str, object]:
+            return row(
+                identity,
+                merchantName="Appliance service",
+                amount={"chargedAmount": {"amount": -69, "currency": "ILS"}},
+                date={
+                    "transactionDate": purchase,
+                    "bookingDate": purchase,
+                    "valueDate": charged,
+                },
+                installments={"number": number, "total": 36},
+                isCreditCardInstallment=True,
+            )
+
+        def rows(start: date, end: date) -> list[dict[str, object]]:
+            if start == START:
+                return [
+                    row(),
+                    installment("recent-1", "2026-06-20", "2026-07-02", 1),
+                    installment("recent-2", "2026-06-20", "2026-10-02", 4),
+                ]
+            self.assertEqual((start, end), (date(2021, 6, 1), date(2026, 5, 31)))
+            return [
+                row("older-purchase", date={"transactionDate": "2025-01-05"}),
+                installment("old-charged-now", "2024-11-10", "2026-08-02", 21),
+                installment("old-charged-before", "2024-11-10", "2026-05-02", 18),
+                {
+                    **installment("old-copy", "2024-11-10", "2026-07-02", 20),
+                    "isDuplicate": True,
+                },
+            ]
+
+        self.client.transaction_rows.side_effect = rows
+        info = self.sync()
+        self.assertEqual(info["transaction_count"], 3)
+        self.assertEqual(info["earlier_purchase_installments"], 1)
+        # A payment not yet charged is outside the window; older rows are not.
+        self.assertEqual(info["outside_range_excluded"], 1)
+        self.assertEqual(info["duplicates_excluded"], 0)
+        records = {r["id"]: r for r in load_snapshot(self.path, self.store)["records"]}
+        self.assertEqual(set(records), {"one", "recent-1", "old-charged-now"})
+        old = records["old-charged-now"]
+        self.assertEqual(
+            (old["day"], old["date_source"], old["purchase_day"]),
+            ("2026-08-02", "valueDate", "2024-11-10"),
+        )
+        self.assertEqual(
+            (old["installment_number"], old["installment_total"]), (21, 36)
+        )
+        self.assertEqual(records["recent-1"]["day"], "2026-07-02")
+        self.assertIsNone(records["one"]["installment_total"])
+        self.assertEqual(records["one"]["purchase_day"], "")
+
+        for invalid in (
+            {"number": 5, "total": 3},
+            {"number": True, "total": 3},
+            {"number": "1", "total": 3},
+            {"total": 3},
+        ):
+            self.client.transaction_rows.side_effect = None
+            self.client.transaction_rows.return_value = [row(installments=invalid)]
+            with self.assertRaises(FinancyError):
+                self.sync()
 
     def test_duplicates_date_fallback_and_conflicting_ids(self) -> None:
         self.client.transaction_rows.return_value = [
@@ -1864,8 +1939,8 @@ class ReportRegressionTests(unittest.TestCase):
             ),
         ]
         html = simple_report_html(self.snapshot(records))
-        self.assertIn("עמלות, ביטוחים, מנויים והוראות קבע", html)
-        top_section = html[html.index("עמלות, ביטוחים, מנויים והוראות קבע") :]
+        self.assertIn("עמלות, ביטוחים, מנויים, הוראות קבע ותשלומים", html)
+        top_section = html[html.index("עמלות, ביטוחים, מנויים, הוראות קבע ותשלומים") :]
         self.assertIn("Bank fee 11", top_section)
         # Only the 10 most expensive fees are listed, cheapest excluded.
         self.assertNotIn("Bank fee 0<", top_section)
@@ -1873,6 +1948,44 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertIn("Netflix", top_section)
         self.assertIn("Municipal tax", top_section)
         self.assertIn("350.00 ₪", top_section)
+
+    def test_card_installments_are_fixed_payments_not_subscriptions(self) -> None:
+        def payment(month: str, number: int) -> dict[str, Any]:
+            return self.record(
+                f"bosch-{month}",
+                account_type="credit_card",
+                day=f"2026-{month}-02",
+                date_source="valueDate",
+                merchant="שרות בוש/סימנס",
+                amount="-69",
+                category="SHOPPING",
+                subcategory="ELECTRONICS",
+                installment_number=number,
+                installment_total=36,
+                purchase_day="2024-11-10",
+            )
+
+        records = [payment("06", 19), payment("07", 20), payment("08", 21)]
+        self.assertTrue(_is_card_installment(records[0]))
+        self.assertTrue(_is_fixed_payment(records[0]))
+        self.assertFalse(_is_card_installment(self.record()))
+        self.assertEqual(recurring_merchants(records), set())
+        html = simple_report_html(self.snapshot(records))
+        top_section = html[html.index("עמלות, ביטוחים, מנויים, הוראות קבע ותשלומים") :]
+        fixed = top_section[top_section.index("<h3>הוראות קבע ותשלומים</h3>") :]
+        self.assertIn("שרות בוש/סימנס", fixed)
+        self.assertIn("תשלום 21 מתוך 36 · נרכש 10.11.2024", fixed)
+        subscriptions = top_section[
+            top_section.index("<h3>מנויים וחיובים חוזרים</h3>") : top_section.index(
+                "<h3>הוראות קבע ותשלומים</h3>"
+            )
+        ]
+        self.assertNotIn("שרות בוש/סימנס", subscriptions)
+        # Still counted in its spending category, in the month it was charged.
+        trend = general_category_trend(self.snapshot(records))
+        self.assertEqual(
+            trend["currencies"]["ILS"]["2026-08"]["categories"]["קניות"], Decimal(69)
+        )
 
     def test_top_categories_section_reports_missing_and_partial_last_month(
         self,
@@ -1886,5 +1999,5 @@ class ReportRegressionTests(unittest.TestCase):
             date_to="2026-08-31",
         )
         html = simple_report_html(snapshot)
-        top_index = html.index("עמלות, ביטוחים, מנויים והוראות קבע")
+        top_index = html.index("עמלות, ביטוחים, מנויים, הוראות קבע ותשלומים")
         self.assertIn("הבדיקה לחודש הזה חלקית", html[top_index:])

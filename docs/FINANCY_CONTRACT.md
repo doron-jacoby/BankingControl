@@ -110,6 +110,16 @@ for result sets over 500 despite the query flag. The importer therefore checks
 the flag locally, removes identical repeated IDs, and rejects conflicting IDs.
 Dates prefer transactionDate, bookingDate, then valueDate; selected-date outliers
 are counted and excluded. Requested ranges do not prove provider history coverage.
+Card installments are the exception. Financy returns one row per payment, all
+carrying the purchase's `transactionDate`, with the charge date in `valueDate` and
+`installments: {number, total}`. A row with `total > 1` is dated by `valueDate`,
+keeps the purchase date and payment number, and is counted when charged; future
+payments fall outside the window. Because the API date filter matches purchase
+dates, sync makes a second request for the five years before the window. From
+it, only installment rows charged inside the window are kept, counted as
+`earlier_purchase_installments`. A live check on 2026-09-19 found 52 such
+payments (for example 36 × ₪69 and 48 × ₪78) that bank settlements included but
+the snapshot lacked.
 
 Monthly reports keep account types, currencies and source statuses separate.
 Only source-labelled BOOKED rows enter the category breakdown. Provider category
@@ -192,9 +202,10 @@ insurance, not a fee. Subscriptions: live data has no `SUBSCRIPTIONS` category, 
 `recurring_merchants` estimates them from the twelve-month window in original
 currencies: a named merchant with included debits in 3+ months, at most 1.5
 charges per active month, and 80%+ of charges within 20% of the median amount.
-Fees, insurance and standing orders are excluded from that group. Standing
-orders: subcategory `DIRECT_DEBIT`; rows show the merchant or recipient name
-when available, charge dates and account label.
+Fees, insurance, standing orders and card installments are excluded from that
+group. Standing orders and payments: subcategory `DIRECT_DEBIT` plus card
+installment payments; rows show the merchant or recipient name when available,
+charge dates, account label, and each installment's payment number and purchase date.
 
 Each group gets a twelve-month ILS total trend (`_predicate_monthly_totals`) and
 the ten most expensive merchants in the latest completed month

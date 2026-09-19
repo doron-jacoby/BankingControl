@@ -111,8 +111,13 @@ in the category labels or Hebrew fee words in the merchant name (עמלה, דמ�
 דמי ניהול); Financy's `INSURANCE_&_FEES` premiums are listed as insurance, not
 fees. Financy has no subscription label, so subscriptions are estimated: a
 merchant charged about once a month at a stable price (within 20% of its median)
-in at least three months. Standing orders are the `DIRECT_DEBIT` subcategory;
-recipient names are shown when supplied, alongside date and account. Amounts
+in at least three months. Standing orders and payments are the `DIRECT_DEBIT`
+subcategory plus card purchases paid in installments; recipient names are shown
+when supplied, alongside date and account, and each installment shows its payment
+number and purchase date. Installment payments never count as subscriptions.
+Each installment is counted in the month it is charged, not the purchase month,
+and sync also fetches installments charged in the window for purchases made up to
+five years earlier (Financy filters by purchase date, so they were missing). Amounts
 here are in full shekels, not thousands. Self-transfers, gifts and income are
 excluded, as in the rest of the report.
 
