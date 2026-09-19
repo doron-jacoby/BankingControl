@@ -1,10 +1,13 @@
 import secrets
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from test_foundation import NOW, account, provider_transaction
 
@@ -138,3 +141,65 @@ class SyncTests(unittest.TestCase):
             self.assertTrue(acquired)
             self.assertEqual(service.sync(now=NOW).status, "already_running")
         self.assertEqual(service.sync(now=NOW).status, "completed")
+
+    def test_lock_excludes_a_separate_python_process(self) -> None:
+        lock = self.path.with_suffix(".sync.lock")
+        program = "from pathlib import Path\nimport sys\nfrom finance.sync import sync_lock\nwith sync_lock(Path(sys.argv[1])) as acquired:\n print(acquired)\n"
+        with sync_lock(lock):
+            result = subprocess.run(
+                [sys.executable, "-c", program, str(lock)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        self.assertEqual(result.stdout.strip(), "False")
+
+    def test_final_arriving_before_pending_still_has_one_row(self) -> None:
+        pending = replace(provider_transaction(), status=TransactionStatus.PENDING)
+        final = replace(
+            pending,
+            status=TransactionStatus.POSTED,
+            provider_transaction_id="final",
+            raw_metadata={"pending_transaction_id": pending.provider_transaction_id},
+        )
+        SyncService(
+            FakeFinanceProvider([account()], [final]), self.path, self.key
+        ).sync(now=NOW)
+        result = SyncService(
+            FakeFinanceProvider([account()], [pending, final]), self.path, self.key
+        ).sync(now=NOW)
+        self.assertEqual((result.inserted, result.updated), (0, 0))
+        with open_database(self.key, self.path) as db:
+            self.assertEqual(len(transactions(db)), 1)
+
+    def test_stale_posted_record_does_not_regress_reversal(self) -> None:
+        original = provider_transaction()
+        reversed_record = replace(original, status=TransactionStatus.REVERSED)
+        service = SyncService(
+            FakeFinanceProvider([account()], [reversed_record, original]),
+            self.path,
+            self.key,
+        )
+        service.sync(now=NOW)
+        with open_database(self.key, self.path) as db:
+            self.assertEqual(transactions(db)[0].status, TransactionStatus.REVERSED)
+
+    def test_unexpected_provider_exception_is_sanitized_and_checkpoint_unchanged(
+        self,
+    ) -> None:
+        provider = FakeFinanceProvider([account()], [])
+        with patch.object(
+            provider,
+            "fetch_transactions",
+            side_effect=RuntimeError("private provider response"),
+        ):
+            result = SyncService(provider, self.path, self.key).sync(now=NOW)
+        self.assertEqual(result.errors, ["validation"])
+        self.assertNotIn("private", str(result))
+        with open_database(self.key, self.path) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT status, last_successful_sync FROM sync_states"
+                ).fetchone(),
+                ("failed", None),
+            )

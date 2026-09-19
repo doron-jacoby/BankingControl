@@ -1,0 +1,10 @@
+{
+  "format": "personal-finance-plan-v1",
+  "deployable": false,
+  "cadence": "weekly",
+  "timezone": "Asia/Jerusalem",
+  "weekday": "Sunday",
+  "local_time": "09:00",
+  "workflow_name": "personal_finance_weekly",
+  "note": "Map to the deployed server's supported schedule mechanism after verifying its contract. The local demo runs at its first poll in each ISO week and is not this server schedule."
+}

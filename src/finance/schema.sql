@@ -84,5 +84,10 @@ CREATE TABLE classification_rules (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE task_receipts (
+    request_hash TEXT PRIMARY KEY NOT NULL,
+    completed_at TEXT NOT NULL
+);
+
 PRAGMA user_version = 1;
 COMMIT;

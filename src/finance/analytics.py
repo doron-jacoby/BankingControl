@@ -45,6 +45,8 @@ class AnalyticsService:
     def get_real_monthly_expenses(self, year: int, month: int) -> MonthlyExpenseSummary:
         zone = ZoneInfo(self.timezone)
         datetime(year, month, 1, tzinfo=zone)  # Validate before accessing records.
+        if not self.db.in_transaction:
+            self.db.execute("BEGIN")
         all_records = transactions(self.db)
         records = [
             tx

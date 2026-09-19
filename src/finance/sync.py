@@ -65,6 +65,8 @@ def source_key(record: ProviderTransaction, occurrence: int = 0) -> str:
     amount = format(record.amount, "f")
     if "." in amount:
         amount = amount.rstrip("0").rstrip(".")
+    if record.amount == 0:
+        amount = "0"
     values = [
         record.transaction_date.astimezone(UTC).isoformat(),
         amount,
@@ -112,6 +114,11 @@ def _upsert(
             and record.status == TransactionStatus.PENDING
         ):
             return 0, 0
+        if (
+            existing.status == TransactionStatus.REVERSED
+            and record.status != TransactionStatus.REVERSED
+        ):
+            return 0, 0
         candidate = replace(existing, **values)
         changed = candidate != existing
         if changed:
@@ -133,6 +140,12 @@ def _upsert(
         "ON CONFLICT(account_id, source_key) DO NOTHING",
         (account.internal_id, key, transaction_id),
     )
+    if isinstance(pending_id, str):
+        db.execute(
+            "INSERT INTO transaction_aliases VALUES (?, ?, ?) "
+            "ON CONFLICT(account_id, source_key) DO NOTHING",
+            (account.internal_id, "id:" + pending_id, transaction_id),
+        )
     return int(existing is None), int(changed)
 
 
@@ -158,10 +171,13 @@ class SyncService:
                 try:
                     discovered = self.provider.list_accounts()
                     for account in discovered:
-                        self._account(account, now, result)
+                        try:
+                            self._account(account, now, result)
+                        except StorageError:
+                            result.errors.append("storage")
                 except ProviderError as error:
                     result.errors.append(error.code)
-                except (ValueError, TypeError):
+                except Exception:
                     result.errors.append("validation")
         if result.errors:
             result.status = "partial" if result.accounts_processed else "failed"
@@ -231,7 +247,7 @@ class SyncService:
             result.accounts_processed += 1
             result.inserted += inserted
             result.updated += updated
-        except (ProviderError, StorageError, ValueError, TypeError) as error:
+        except Exception as error:
             code = (
                 error.code
                 if isinstance(error, ProviderError)

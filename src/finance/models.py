@@ -36,6 +36,11 @@ def validate_currency(value: str) -> None:
 def validate_money(amount: Decimal, currency: str) -> None:
     if not isinstance(amount, Decimal) or not amount.is_finite():
         raise ValueError("Amount must be a finite Decimal")
+    if (
+        len(amount.as_tuple().digits) > 100
+        or abs(int(amount.as_tuple().exponent)) > 100
+    ):
+        raise ValueError("Amount exceeds supported precision or range")
     validate_currency(currency)
 
 

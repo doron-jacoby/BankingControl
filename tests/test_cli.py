@@ -22,10 +22,11 @@ class CLITests(unittest.TestCase):
                 pass
             prefix = ["--demo", "--data-dir", directory]
             with patch("finance.cli.MacOSKeychain", return_value=store):
-                for command in ("sync", "status", "accounts", "transactions"):
+                for command in ("sync", "status", "accounts", "transactions", "worker"):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
-                        self.assertEqual(main(prefix + [command]), 0)
+                        suffix = ["--once"] if command == "worker" else []
+                        self.assertEqual(main(prefix + [command] + suffix), 0)
                     data = json.loads(output.getvalue())
                     if command == "sync":
                         self.assertEqual(data["inserted"], 13)

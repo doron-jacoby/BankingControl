@@ -101,3 +101,15 @@ def demo_provider(now: datetime | None = None) -> FakeFinanceProvider:
             )
         )
     return FakeFinanceProvider([bank, card, savings], records)
+
+
+class MonthlyDemoProvider:
+    """Refresh synthetic fixtures when a long-lived worker crosses a month."""
+
+    def list_accounts(self) -> list[Account]:
+        return demo_provider().list_accounts()
+
+    def fetch_transactions(
+        self, account_id: str, from_date: datetime, to_date: datetime
+    ) -> list[ProviderTransaction]:
+        return demo_provider(to_date).fetch_transactions(account_id, from_date, to_date)

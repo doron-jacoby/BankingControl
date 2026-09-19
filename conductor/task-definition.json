@@ -1,0 +1,13 @@
+{
+  "format": "personal-finance-plan-v1",
+  "deployable": false,
+  "task_name": "finance_sync",
+  "bootstrap_timeout_seconds": 14400,
+  "response_timeout_seconds": 18000,
+  "max_attempts": 3,
+  "retry_base_seconds": 60,
+  "retry_max_seconds": 3600,
+  "retryable_errors": ["transient"],
+  "non_retryable_errors": ["authentication", "validation", "storage", "classification", "local_failure"],
+  "idempotent_completion_statuses": ["completed", "duplicate", "already_running"]
+}

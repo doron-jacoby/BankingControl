@@ -54,7 +54,7 @@ def provider_transaction() -> ProviderTransaction:
 
 class ModelTests(unittest.TestCase):
     def test_money_rejects_float_and_nonfinite_values(self) -> None:
-        for invalid in (19.9, Decimal("NaN"), Decimal("Infinity")):
+        for invalid in (19.9, Decimal("NaN"), Decimal("Infinity"), Decimal("1e101")):
             with (
                 self.subTest(kind=type(invalid).__name__),
                 self.assertRaises(ValueError),

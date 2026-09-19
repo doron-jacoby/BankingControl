@@ -9,13 +9,14 @@ from typing import Any
 
 from finance.analytics import AnalyticsService
 from finance.classification import FLAGS, MATCH_TYPES, backfill, save_rule
-from finance.demo import demo_provider
+from finance.demo import MonthlyDemoProvider
 from finance.models import Category, ClassificationRule, utc_now
 from finance.repository import accounts, transactions
 from finance.security import MacOSKeychain, SecretError, load_database_key
 from finance.service import FinanceService
 from finance.storage import DEFAULT_DATABASE_PATH, StorageError, open_database
 from finance.sync import SyncService
+from finance.worker import WorkerSettings, run_demo_worker, worker_status
 
 
 def parser() -> argparse.ArgumentParser:
@@ -42,6 +43,13 @@ def parser() -> argparse.ArgumentParser:
     rule.add_argument("category", choices=[category.value for category in Category])
     rule.add_argument("--priority", type=int, default=0)
     rule.add_argument("--flag", action="append", choices=sorted(FLAGS), default=[])
+    worker = commands.add_parser("worker")
+    worker.add_argument(
+        "--once", action="store_true", help="Poll and execute once in the foreground"
+    )
+    worker.add_argument("--poll-seconds", type=int, default=30)
+    worker.add_argument("--retry-base-seconds", type=int, default=60)
+    worker.add_argument("--max-attempts", type=int, default=3)
     return result
 
 
@@ -80,9 +88,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         key = load_database_key(MacOSKeychain(), key_name)
+        if args.command == "worker":
+            output = run_demo_worker(
+                FinanceService(
+                    SyncService(MonthlyDemoProvider(), path, key, args.overlap_days)
+                ),
+                once=args.once,
+                settings=WorkerSettings(
+                    poll_seconds=args.poll_seconds,
+                    retry_base_seconds=args.retry_base_seconds,
+                    max_attempts=args.max_attempts,
+                ),
+            )
+            emit(output)
+            return (
+                0
+                if output["status"] in {"completed", "duplicate", "already_running"}
+                else 1
+            )
         if args.command == "sync":
             summary = FinanceService(
-                SyncService(demo_provider(), path, key, args.overlap_days)
+                SyncService(MonthlyDemoProvider(), path, key, args.overlap_days)
             ).sync()
             emit(asdict(summary))
             return 0 if summary.status in {"completed", "already_running"} else 1
@@ -147,11 +173,13 @@ def main(argv: list[str] | None = None) -> int:
                         "last_error": db.execute(
                             "SELECT error FROM sync_states WHERE error IS NOT NULL ORDER BY last_sync_finished_at DESC LIMIT 1"
                         ).fetchone(),
-                        "worker_status": "unknown",
+                        "worker_status": worker_status(path.parent),
                     }
                 )
         return 0
-    except (SecretError, StorageError, ValueError, OSError):
+    except KeyboardInterrupt:
+        return 130
+    except (SecretError, StorageError, ValueError, OSError, KeyError):
         emit(
             {
                 "status": "failed",

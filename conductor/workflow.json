@@ -1,0 +1,10 @@
+{
+  "format": "personal-finance-plan-v1",
+  "deployable": false,
+  "blocked_on": "Deployed Netflix Conductor version, supported SDK and organization conventions",
+  "workflow_name": "personal_finance_weekly",
+  "tasks": [
+    {"task_name": "finance_sync", "input": {"request_id": "generated-correlation-id", "mode": "incremental"}}
+  ],
+  "output_fields": ["status", "accounts_processed", "inserted", "updated", "started_at", "finished_at", "error", "retryable"]
+}
