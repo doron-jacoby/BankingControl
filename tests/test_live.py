@@ -1046,6 +1046,46 @@ class ReportRegressionTests(unittest.TestCase):
             | info,
         }
 
+    def test_review_amount_count_and_monthly_average(self) -> None:
+        snapshot = self.snapshot(
+            [
+                self.record("transfer", category="TRANSFER", amount="-1000"),
+                self.record("credit", amount="500"),
+                self.record("pending", status="PENDING", amount="-250"),
+                self.record("missing", amount=None),
+                self.record(
+                    "foreign", category="TRANSFER", amount="-100", currency="USD"
+                ),
+                self.record(
+                    "settlement", subcategory="CREDIT_CARD_CHECKING", amount="-9000"
+                ),
+                self.record("investment", account_type="investment", amount="-8000"),
+                self.record("known", category="TRANSFER", amount="-7000"),
+                self.record(
+                    "july", day="2026-07-20", category="TRANSFER", amount="-250"
+                ),
+            ],
+            date_from="2026-07-15",
+        )
+        rules = [
+            LiveTagRule(tag="self_transfer", account_id="account-1", record_id="known")
+        ]
+        html = simple_report_html(snapshot, rules, {("USD", "2026-08"): Decimal(3)})
+        august = html.split("<td>אוגוסט 2026</td>")[1].split("</tr>")[0]
+        self.assertTrue(
+            august.endswith(
+                "<td><span dir='ltr' title='ILS 2,050.00'>2.0</span> (5)</td>"
+            )
+        )
+        average = html.split("<strong>ממוצע חודשי</strong>")[1].split("</tr>")[0]
+        self.assertTrue(
+            average.endswith(
+                "<td><span dir='ltr' title='ILS 1,150.00'>1.2</span> (3.0)</td>"
+            )
+        )
+        self.assertIn("title='ILS 4,500.00'", average)
+        self.assertNotIn("ממוצע חודשי</strong>", simple_report_html(self.snapshot([])))
+
     def test_card_expense_counts_unless_explicitly_excluded(self) -> None:
         snapshot = self.snapshot(
             [
@@ -1193,9 +1233,9 @@ class ReportRegressionTests(unittest.TestCase):
                 self.assertEqual(summary["included_count"], 1)
         html = simple_report_html(snapshot)
         self.assertIn("<th>אשראי ללא פירוט</th>", html)
-        self.assertEqual(html.count("title='ILS 25,000.50'"), 24)
+        self.assertEqual(html.count("title='ILS 25,000.50'"), 26)
         # Four unresolved records per month; the included charge needs no review.
-        self.assertEqual(html.count("<td>4</td></tr>"), 12)
+        self.assertEqual(html.count("</span> (4)</td></tr>"), 12)
 
     def test_confirmed_movements_and_duplicate_settlements_are_excluded(self) -> None:
         snapshot = self.snapshot(
@@ -1225,7 +1265,9 @@ class ReportRegressionTests(unittest.TestCase):
             .split("<td>אוגוסט 2026</td>")[1]
             .split("</tr>")[0]
         )
-        self.assertTrue(row.endswith("<td>0</td>"))
+        self.assertTrue(
+            row.endswith("<td><span dir='ltr' title='ILS 0.00'>0.0</span> (0)</td>")
+        )
         # Missing source status must remain unresolved even after identification.
         snapshot["records"][3]["status"] = "UNKNOWN"
         row = (
@@ -1233,7 +1275,9 @@ class ReportRegressionTests(unittest.TestCase):
             .split("<td>אוגוסט 2026</td>")[1]
             .split("</tr>")[0]
         )
-        self.assertTrue(row.endswith("<td>1</td>"))
+        self.assertTrue(
+            row.endswith("<td><span dir='ltr' title='ILS 200.00'>0.2</span> (1)</td>")
+        )
 
     def test_insurance_increase_unknown_and_missing_amount_are_reviewed(self) -> None:
         snapshot = self.snapshot(

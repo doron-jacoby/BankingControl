@@ -92,6 +92,11 @@ prove complete provider history. The latest completed month is included when the
 snapshot ends on its last day. Identifiers are available in collapsed review
 rows so users can trace and tag a movement. All exports remain private local HTML/PDF.
 
+The final monthly column shows the absolute sum of movements pending review,
+in thousands of shekels, followed by their count in parentheses. Missing amounts
+contribute only to the count. The monthly-average row includes months with data
+(including partial months), leaving missing and empty months out of the divisor.
+
 The default report also includes a fees/insurance/subscriptions/standing-orders
 section: a twelve-month trend of each group's total, plus the ten most expensive
 items of each group in the latest completed month, grouped by merchant and sorted
