@@ -91,6 +91,9 @@ def parser() -> argparse.ArgumentParser:
     )
     tag.add_argument("--category", help="Match Financy's category label")
     tag.add_argument("--subcategory", help="Match Financy's subcategory label")
+    tag.add_argument("--amount", help="Match the exact signed source amount")
+    tag.add_argument("--general-category", help="User-assigned report category")
+    tag.add_argument("--transfer-type", choices=["ZAHAV"], help="Requires --account-id")
     tag.add_argument(
         "--note", default="", help="Local reminder of why, never sent anywhere"
     )
@@ -314,6 +317,9 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                         record_id=args.record_id,
                         category=args.category,
                         subcategory=args.subcategory,
+                        amount=args.amount,
+                        general_category=args.general_category,
+                        transfer_type=args.transfer_type,
                         note=args.note,
                         priority=args.priority,
                     )

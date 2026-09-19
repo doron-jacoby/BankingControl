@@ -163,4 +163,9 @@ def shekel_record(
         with localcontext() as context:
             context.prec = 440
             amount = str(Decimal(amount) * rate)
-    return {**record, "currency": "ILS", "amount": amount}
+    return {
+        **record,
+        "currency": "ILS",
+        "amount": amount,
+        "source_amount": record["amount"],
+    }
