@@ -34,7 +34,7 @@ Financy CLI is not required; its file-based credential storage is not used.
 3. Add the intended bank/card through Financy and complete its hosted bank
    consent journey. Connections cannot be created through this API. Follow the
    actual bank screens rather than guessed Bank Leumi button names.
-4. Run `./install.sh`, select option 2, and enter credentials only into its masked
+4. Run `./install.sh`, select option 2, and enter credentials only into its
    local prompts. Alternatively run the installed `finance connect` command.
 5. Use `finance accounts` and `finance status` for local account discovery and
    readiness checks. This setup does not initialize a live transaction database
@@ -44,7 +44,8 @@ The user confirmed that the `clientId`, `clientSecret` and `userId` fields are
 at the bottom of Settings. Use each field's copy button for the full value.
 An API availability badge only indicates plan access.
 The installer follows the site's order: User ID, Client ID, Client secret.
-Input appears as `*` while typing or pasting; no prefixes or counts are printed.
+User ID is visible while typing or pasting. Client ID and Client secret appear
+as `*`; no credential prefixes or counts are printed.
 The user-confirmed field lengths are checked locally: 32 for Client ID, 64 for
 Client secret, and no fixed length for User ID. Full credentials are verified
 before being stored in macOS Keychain.

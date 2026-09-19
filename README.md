@@ -22,7 +22,8 @@ now supports **live Financy authentication and account discovery** against the
 published API 1.0.0 contract. It guides you through signing in, linking your bank
 in Financy and finding API credentials at the bottom of Settings.
 Enter User ID, Client ID, then Client secret, matching the site's order.
-Pasted input appears as `*`. Client ID must have 32 characters and Client secret
+User ID stays visible; Client ID and Client secret appear as `*`.
+Client ID must have 32 characters and Client secret
 64; an incorrect length prompts you to retry that field. User ID length varies.
 No credential prefixes or character counts are displayed. Credentials are
 verified before being stored as one macOS Keychain item. There are no extra

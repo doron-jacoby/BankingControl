@@ -331,13 +331,15 @@ def connect_interactively(
     print(
         "\n🔑 Financy -> Settings -> scroll to the bottom -> API credentials.\n"
         "Use each field's copy button to get the full value.\n"
-        "Paste each value, then Enter. You'll see * as you type or paste.\n"
+        "Paste each value, then Enter. User ID is visible; API credentials show *.\n"
         "Verified credentials will be saved in macOS Keychain."
     )
 
-    def read(label: str, expected_length: int | None = None) -> str:
+    def read(
+        label: str, reader: Callable[[str], str], expected_length: int | None = None
+    ) -> str:
         while True:
-            value = read_secret(f"{label}: ").strip()
+            value = reader(f"{label}: ").strip()
             if not value or len(value) > 8192 or not value.isprintable():
                 print(
                     "⚠ Empty or invalid value. Copy the full credential and try again."
@@ -350,11 +352,11 @@ def connect_interactively(
                 continue
             return value
 
-    user_id = read("[1/3] User ID")
+    user_id = read("[1/3] User ID", input)
     credentials = Credentials(
         userId=user_id,
-        clientId=read("[2/3] Client ID", 32),
-        clientSecret=read("[3/3] Client secret", 64),
+        clientId=read("[2/3] Client ID", read_secret, 32),
+        clientSecret=read("[3/3] Client secret", read_secret, 64),
     )
     print("⏳ Checking API access and linked accounts…")
     client = FinancyClient(credentials, transport)

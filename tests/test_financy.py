@@ -142,23 +142,29 @@ class FinancyTests(unittest.TestCase):
         )
         transport = FakeTransport([token(), connections, account_page()])
         stream = io.StringIO()
-        with contextlib.redirect_stdout(stream):
+        with (
+            contextlib.redirect_stdout(stream),
+            patch("builtins.input", return_value=CREDS.userId) as visible_input,
+        ):
             summary = connect_interactively(
                 store,
-                read_secret=Mock(
-                    side_effect=[CREDS.userId, CREDS.clientId, CREDS.clientSecret]
-                ),
+                read_secret=Mock(side_effect=[CREDS.clientId, CREDS.clientSecret]),
                 transport=transport,
             )
         self.assertEqual(summary["account_count"], 1)
+        visible_input.assert_called_once_with("[1/3] User ID: ")
         self.assertEqual(summary["connections_requiring_attention"], 1)
         self.assertEqual(Credentials.load(store), CREDS)
         self.assertNotIn(CREDS.clientSecret, stream.getvalue())
         self.assertNotIn("characters)", stream.getvalue())
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(FinancyError):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("builtins.input", return_value="new-user"),
+            self.assertRaises(FinancyError),
+        ):
             connect_interactively(
                 store,
-                read_secret=Mock(side_effect=["new-user", "n" * 32, "t" * 64]),
+                read_secret=Mock(side_effect=["n" * 32, "t" * 64]),
                 transport=FakeTransport([(401, {})]),
             )
         self.assertEqual(Credentials.load(store), CREDS)
@@ -169,9 +175,6 @@ class FinancyTests(unittest.TestCase):
         transport = FakeTransport([token(), (200, {"items": []}), account_page()])
         reader = Mock(
             side_effect=[
-                "",
-                "\x1b[31m",
-                " u ",
                 "c" * 31,
                 "c" * 33,
                 CREDS.clientId,
@@ -180,7 +183,12 @@ class FinancyTests(unittest.TestCase):
                 CREDS.clientSecret,
             ]
         )
-        with contextlib.redirect_stdout(stream):
+        with (
+            contextlib.redirect_stdout(stream),
+            patch(
+                "builtins.input", side_effect=["", "\x1b[31m", " u "]
+            ) as visible_input,
+        ):
             connect_interactively(
                 store,
                 read_secret=reader,
@@ -198,10 +206,9 @@ class FinancyTests(unittest.TestCase):
         self.assertNotIn("\x1b", output)
         self.assertEqual(
             [call.args[0] for call in reader.call_args_list],
-            ["[1/3] User ID: "] * 3
-            + ["[2/3] Client ID: "] * 3
-            + ["[3/3] Client secret: "] * 3,
+            ["[2/3] Client ID: "] * 3 + ["[3/3] Client secret: "] * 3,
         )
+        self.assertEqual(visible_input.call_count, 3)
 
     def test_millisecond_token_lifetime_and_early_renewal(self) -> None:
         for expiry, lifetime in [(86_400_000, 77_760), (86400, 77.76)]:
