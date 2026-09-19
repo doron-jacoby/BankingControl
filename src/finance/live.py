@@ -1443,6 +1443,12 @@ def simple_report_html(
     trend_sections = []
     for currency, months in trend["currencies"].items():
         rows = []
+        counted_months = 0
+        category_sums = {label: Decimal(0) for label in labels}
+        total_sum = Decimal(0)
+        travel_sum = Decimal(0)
+        unresolved_sum_total = Decimal(0)
+        unresolved_count_total = 0
         for key in trend["months"]:
             coverage = trend["coverage"][key]
             records = [
@@ -1463,7 +1469,8 @@ def simple_report_html(
                 continue
             if coverage == "partial":
                 month_label += " <small>(חלקי)</small>"
-            unresolved = 0
+            unresolved_count = 0
+            unresolved_sum = Decimal(0)
             for record in records:
                 amount = (
                     Decimal(record["amount"]) if record["amount"] is not None else None
@@ -1471,10 +1478,14 @@ def simple_report_html(
                 reason, _ = _reconcile_reason(
                     record, amount, resolve_tag(record, rules)
                 )
-                unresolved += reason.startswith("unresolved_") or reason in {
+                if reason.startswith("unresolved_") or reason in {
                     "missing_amount",
                     "not_booked",
-                }
+                }:
+                    unresolved_count += 1
+                    if amount is not None:
+                        unresolved_sum += abs(amount)
+            travel_amount = months[key]["categories"].get(travel_label, Decimal(0))
             rows.append(
                 f"<tr><td>{month_label}</td>"
                 + "".join(
@@ -1482,8 +1493,29 @@ def simple_report_html(
                     for label in labels
                 )
                 + f"<td><strong>{money(months[key]['total_excluding_travel'], currency)}</strong></td>"
-                + f"<td>{money(months[key]['categories'].get(travel_label, Decimal(0)), currency)}</td>"
-                + f"<td>{unresolved}</td></tr>"
+                + f"<td>{money(travel_amount, currency)}</td>"
+                + f"<td>{money(unresolved_sum, currency)} ({unresolved_count})</td></tr>"
+            )
+            counted_months += 1
+            for label in labels:
+                category_sums[label] += months[key]["categories"].get(
+                    label, Decimal(0)
+                )
+            total_sum += months[key]["total_excluding_travel"]
+            travel_sum += travel_amount
+            unresolved_sum_total += unresolved_sum
+            unresolved_count_total += unresolved_count
+        if counted_months:
+            rows.append(
+                f"<tr><td><strong>ממוצע חודשי</strong></td>"
+                + "".join(
+                    f"<td>{money(category_sums[label] / counted_months, currency)}</td>"
+                    for label in labels
+                )
+                + f"<td><strong>{money(total_sum / counted_months, currency)}</strong></td>"
+                + f"<td>{money(travel_sum / counted_months, currency)}</td>"
+                + f"<td>{money(unresolved_sum_total / counted_months, currency)} "
+                f"({unresolved_count_total / counted_months:.1f})</td></tr>"
             )
         trend_sections.append(
             f"<h3>{escape(units(currency))}</h3><div class='scroll'><table><thead><tr><th>חודש</th>"
@@ -1666,7 +1698,7 @@ def simple_report_html(
         + coverage_note
         + "</header><section><h2>הוצאות לפי חודש וקטגוריה</h2>"
         + "".join(trend_sections)
-        + "<details><summary>איך לקרוא את הסכומים</summary><p>העמודה האחרונה מציגה מספר תנועות לבירור, לא סכום כספי. "
+        + "<details><summary>איך לקרוא את הסכומים</summary><p>העמודה האחרונה מציגה את סכום התנועות לבירור (בערך מוחלט), ובסוגריים מספר התנועות. "
         "תנועות שאושרו כהעברה פנימית, מתנה או הכנסה אינן דורשות בירור חוזר. "
         "חיוב הכרטיס בעו״ש, העברות, תנועות השקעה וזיכויים לא מזוהים ממתינים לבירור ואינם נספרים כהוצאה. "
         "חיובים ממתינים וסכומים חסרים אינם כלולים. סימון אישי כהוצאה גובר על סיווג זה; זיכוי שסומן כהוצאה מפחית את הסכום. "
