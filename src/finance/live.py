@@ -556,6 +556,12 @@ def _car_wash_merchant(value: str) -> bool:
     return any(name in normalized for name in ("תחנת החוף המנהרה",))
 
 
+def _bit_transfer_merchant(value: str) -> bool:
+    # Financy never returns a Bit counterparty name; these are the user's
+    # recurring Bit payments to Noa.
+    return value.strip().upper() == "BIT"
+
+
 def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecord:
     """Keep only report fields and IDs; discard descriptions and account numbers."""
     try:
@@ -955,6 +961,8 @@ def _general_category(
         return "חינוך"
     if _car_wash_merchant(merchant):
         return "תחבורה בארץ"
+    if _bit_transfer_merchant(merchant):
+        return "קניות"
     tokens = _tokens(f"{category} {subcategory}")
     travel_label, travel_words = GENERAL_CATEGORIES[-1]
     transport_words = GENERAL_CATEGORIES[2][1]
