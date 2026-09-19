@@ -1,5 +1,14 @@
 # Implementation and verification report
 
+September 19 card-expense correction: BOOKED card settlement debits now count
+unless an explicit saved tag excludes them. Both monthly summaries and report
+trends use the shared rule, with a separate "אשראי ללא פירוט" column. Historical
+months are recomputed; missing amounts, pending/unknown statuses and unconfirmed
+credits retain their exclusions. Regression validation: 132 tests, Ruff
+format/lint, strict mypy and diff checks pass. The live reporting dependencies
+were carried forward from the existing reporting branch and installed version,
+including display labels and PDF exports, because main predates live reports.
+
 The specification was copied unchanged from Downloads into the repository.
 Implementation proceeded phase by phase, extending the scope after the request
 to build everything possible and provide guided installation.
@@ -7,7 +16,9 @@ to build everything possible and provide guided installation.
 Update: the English installer and Keychain-only credentials are unchanged.
 Live import now feeds a concise Hebrew report by default: twelve completed months,
 a single shekel table, education and an Unidentified category and the latest month's review list.
-Unresolved transfers, settlements, investments and credits are held separately
+Card settlement debits count under "אשראי ללא פירוט" unless explicitly excluded;
+the same policy applies to all historical months.
+Unresolved transfers, investments and credits are held separately
 from identified spending. Explicit expense credits reduce spending. Review now
 includes insurance, unknown charges, incomplete records, historical increases and
 same-month outliers. Missing months and partial coverage are visible.

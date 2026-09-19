@@ -114,8 +114,10 @@ are counted and excluded. Requested ranges do not prove provider history coverag
 Monthly reports keep account types, currencies and source statuses separate.
 Only source-labelled BOOKED rows enter the category breakdown. Provider category
 overrides take precedence; settlement, transfer and return labels are counted for
-review. Untagged settlement/transfer/investment movements are withheld from
-identified spending until resolved; this is not a claim of a verified match.
+review. Per the user's expense policy, untagged BOOKED settlement debits count
+as card expenses without itemized details. Explicit saved exclusions prevent
+double counting confirmed matches; amount equality alone is not a verified match.
+Untagged transfer/investment movements are withheld until resolved.
 `finance report` writes a Hebrew HTML report with mode 0600; missing public
 month-end exchange rates are fetched once, then report generation works offline;
 `--detailed` selects the English diagnostic tables.

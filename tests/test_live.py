@@ -925,8 +925,8 @@ class LiveTrendTests(unittest.TestCase):
         trend = general_category_trend(self.snapshot)
         august = trend["currencies"]["ILS"]["2026-08"]
         self.assertEqual(august["categories"]["מזון"], Decimal("120"))
-        # Transfers await review; only the fee contributes to Other.
-        self.assertEqual(august["categories"]["אחר"], Decimal("15"))
+        # Transfers await review; only the fee contributes to bank fees.
+        self.assertEqual(august["categories"]["עמלות בנק"], Decimal("15"))
         self.assertEqual(august["total"], Decimal("135"))
         july = trend["currencies"]["ILS"]["2026-07"]
         self.assertEqual(july["categories"]["תחבורה בארץ"], Decimal("300"))
@@ -937,7 +937,7 @@ class LiveTrendTests(unittest.TestCase):
         )
         trend = general_category_trend(self.snapshot, [rule])
         august = trend["currencies"]["ILS"]["2026-08"]
-        self.assertEqual(august["categories"]["אחר"], Decimal("15"))
+        self.assertEqual(august["categories"]["עמלות בנק"], Decimal("15"))
         self.assertEqual(august["total"], Decimal("135"))
 
     def test_simple_report_is_hebrew_and_flags_the_previous_month(self) -> None:
@@ -1046,7 +1046,7 @@ class ReportRegressionTests(unittest.TestCase):
             | info,
         }
 
-    def test_settlement_transfer_and_investment_not_counted_as_purchases(self) -> None:
+    def test_card_expense_counts_unless_explicitly_excluded(self) -> None:
         snapshot = self.snapshot(
             [
                 self.record("purchase", account_type="credit_card"),
@@ -1063,22 +1063,27 @@ class ReportRegressionTests(unittest.TestCase):
         )
         self.assertEqual(
             general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]["total"],
-            Decimal(100),
+            Decimal(200),
         )
         summary = summarize(snapshot, "2026-08")
-        self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(100))
+        self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(200))
         self.assertEqual(
             {r["id"] for r in summary["flagged_for_review"]},
-            {"settlement", "transfer", "investment"},
+            {"transfer", "investment"},
         )
-        # Even without imported card purchases, settlement remains unresolved,
-        # not a verified exclusion or a fabricated purchase total.
+        # Having card purchases (even with the same amount) does not establish
+        # that this settlement is covered. Only an explicit exclusion does.
+        exclusion = LiveTagRule(
+            tag="self_transfer", account_id="account-1", record_id="settlement"
+        )
+        self.assertEqual(
+            summarize(snapshot, "2026-08", [exclusion])["reconciled"]["ILS"]["spend"],
+            Decimal(100),
+        )
         snapshot["records"] = snapshot["records"][1:2]
         summary = summarize(snapshot, "2026-08")
-        self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(0))
-        self.assertIn(
-            "unresolved_settlement", summary["flagged_for_review"][0]["reasons"]
-        )
+        self.assertEqual(summary["reconciled"]["ILS"]["spend"], Decimal(100))
+        self.assertEqual(summary["flagged_for_review"], [])
         override = LiveTagRule(
             tag="expense", account_id="account-1", record_id="settlement"
         )
@@ -1086,6 +1091,52 @@ class ReportRegressionTests(unittest.TestCase):
             summarize(snapshot, "2026-08", [override])["reconciled"]["ILS"]["spend"],
             Decimal(100),
         )
+
+    def test_fx_and_card_fees_are_bank_fees_and_investment_account_is_not_reviewed(
+        self,
+    ) -> None:
+        snapshot = self.snapshot(
+            [
+                self.record(
+                    "fx-fee",
+                    currency="USD",
+                    amount="-20.25",
+                    category="TRADING",
+                    subcategory="FOREIGN_EXCHANGE",
+                ),
+                self.record(
+                    "conversion",
+                    amount="-2054.02",
+                    category="TRADING",
+                    subcategory="FOREIGN_EXCHANGE",
+                ),
+                self.record(
+                    "card-fee",
+                    account_type="credit_card",
+                    amount=None,
+                    category="FINANCE",
+                    subcategory="FEES",
+                ),
+                self.record(
+                    "pending-investment",
+                    account_type="investment",
+                    amount="20005.24",
+                    status="UNKNOWN",
+                    category="UNCATEGORIZED",
+                    subcategory="UNCATEGORIZED",
+                ),
+            ]
+        )
+        trend = general_category_trend(snapshot)["currencies"]
+        self.assertEqual(
+            trend["USD"]["2026-08"]["categories"], {"עמלות בנק": Decimal("20.25")}
+        )
+        self.assertEqual(trend["ILS"]["2026-08"]["total"], Decimal(0))
+        flagged = {
+            r["id"] for r in summarize(snapshot, "2026-08")["flagged_for_review"]
+        }
+        # A larger untagged conversion still awaits review.
+        self.assertEqual(flagged, {"conversion"})
 
     def test_explicit_refund_reduces_spending_in_both_reports(self) -> None:
         snapshot = self.snapshot(
@@ -1106,7 +1157,47 @@ class ReportRegressionTests(unittest.TestCase):
             summarize(snapshot, "2026-08")["reconciled"]["ILS"]["spend"], Decimal(100)
         )
 
-    def test_confirmed_movements_leave_review_without_adding_spending(self) -> None:
+    def test_unitemized_card_expenses_are_included_throughout_history(self) -> None:
+        months = [f"2025-{m:02}" for m in range(9, 13)] + [
+            f"2026-{m:02}" for m in range(1, 9)
+        ]
+        records = []
+        for month in months:
+            for identity, updates in (
+                ("unitemized", {"amount": "-25000.50"}),
+                ("pending", {"status": "PENDING"}),
+                ("unknown", {"status": "UNKNOWN"}),
+                ("missing", {"amount": None}),
+                ("credit", {"amount": "100"}),
+            ):
+                records.append(
+                    self.record(
+                        month + identity,
+                        day=month + "-10",
+                        subcategory="CREDIT_CARD_CHECKING",
+                        **updates,
+                    )
+                )
+        snapshot = self.snapshot(records)
+        trend = general_category_trend(snapshot)
+        for month in months:
+            with self.subTest(month=month):
+                bucket = trend["currencies"]["ILS"][month]
+                self.assertEqual(bucket["total"], Decimal("25000.50"))
+                self.assertEqual(
+                    bucket["categories"], {"אשראי ללא פירוט": Decimal("25000.50")}
+                )
+                summary = summarize(snapshot, month)["reconciled"]["ILS"]
+                self.assertEqual(summary["spend"], bucket["total"])
+                self.assertEqual(summary["excluded_count"], 4)
+                self.assertEqual(summary["included_count"], 1)
+        html = simple_report_html(snapshot)
+        self.assertIn("<th>אשראי ללא פירוט</th>", html)
+        self.assertEqual(html.count("title='ILS 25,000.50'"), 24)
+        # Four unresolved records per month; the included charge needs no review.
+        self.assertEqual(html.count("<td>4</td></tr>"), 12)
+
+    def test_confirmed_movements_and_duplicate_settlements_are_excluded(self) -> None:
         snapshot = self.snapshot(
             [
                 self.record("purchase"),
@@ -1126,9 +1217,8 @@ class ReportRegressionTests(unittest.TestCase):
         before = summarize(snapshot, "2026-08")
         after = summarize(snapshot, "2026-08", rules)
         self.assertEqual(after["flagged_for_review"], [])
-        self.assertEqual(
-            after["reconciled"]["ILS"]["spend"], before["reconciled"]["ILS"]["spend"]
-        )
+        self.assertEqual(before["reconciled"]["ILS"]["spend"], Decimal(200))
+        self.assertEqual(after["reconciled"]["ILS"]["spend"], Decimal(100))
         self.assertEqual(after["reconciled"]["ILS"]["income"], Decimal(500))
         row = (
             simple_report_html(snapshot, rules)
@@ -1297,7 +1387,12 @@ class ReportRegressionTests(unittest.TestCase):
                 rules = [
                     LiveTagRule(
                         tag="expense", account_id="account-1", record_id="flight-refund"
-                    )
+                    ),
+                    LiveTagRule(
+                        tag="self_transfer",
+                        account_id="account-1",
+                        record_id="settlement",
+                    ),
                 ]
                 month = general_category_trend(snapshot, rules)["currencies"][currency][
                     "2026-08"

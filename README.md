@@ -55,7 +55,10 @@ transaction currencies/amounts remain unchanged; conversion uses exact Decimal
 arithmetic before display rounding. Diagnostics retain original currencies.
 
 Categories are food, shopping, domestic transport, education, health/insurance,
-leisure, overseas travel, Other and Unidentified. HaKfar HaYarok charges are
+leisure, bank fees, overseas travel, Other and Unidentified. Bank fees include
+Financy fee labels and untagged foreign-exchange debits under 100 in the charged
+currency (larger conversions still await review). Card fees without an amount
+and investment-account movements are not listed for review. HaKfar HaYarok charges are
 Education, including the user-confirmed school name found in bank descriptions;
 only its canonical name is retained. תחנת החוף המנהרה charges are domestic
 transport (a user-confirmed car wash), despite Financy's FOOD_&_DRINKS/RESTAURANT
@@ -65,7 +68,11 @@ travel is the next column. Unresolved non-expense movements remain separate.
 Flights go to overseas travel; transport with a foreign merchant country goes
 there too. Subscriptions follow their subject; an unknown subject is Unidentified.
 
-Identified spending excludes unresolved transfers, bank card settlements,
+Bank card settlement debits count as expenses under **אשראי ללא פירוט** unless
+an explicit saved tag excludes them (for example, a confirmed duplicate of card
+purchases). Having some card purchases does not prove a settlement is covered.
+This default applies to every imported month, including history.
+Identified spending excludes unresolved transfers,
 investment movements, credits, incomplete statuses and missing amounts. These
 remain visible for review. A label is a reason to withhold a movement, not proof
 of a matched transfer. Explicit `expense` tags override the withholding; a
@@ -146,7 +153,8 @@ only operational metadata, without names.
 month-end exchange rates, then reuses the saved rates offline. The HTML and PDF reports contain plaintext
 aggregates and recipient names and are written with mode 0600. The HTML loads no external assets; the database
 remains encrypted. Identified purchases can be combined across bank and card accounts, but unresolved
-settlements/transfers are withheld. Source statuses other than `BOOKED` remain
+transfers are withheld. Card settlement debits count unless explicitly excluded.
+Source statuses other than `BOOKED` remain
 outside spending totals. Credits are not assumed to be
 refunds. Missing charged amounts are counted for review and omitted from monetary
 sums; original amounts are not substituted. Dates prefer transaction date, then
