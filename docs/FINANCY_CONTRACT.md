@@ -40,6 +40,16 @@ Financy CLI is not required; its file-based credential storage is not used.
    readiness checks. This setup does not initialize a live transaction database
    or start a live worker.
 
+An API availability message in Settings is a plan entitlement, not a credential.
+The installer needs the actual `clientId`, `clientSecret` and `userId` fields.
+`clientId` is the API client identifier issued by Financy, not a bank login.
+If your screen only shows the entitlement, stop the installer with Ctrl+C and
+ask Financy support where the API credentials for your account are displayed.
+The public documentation names Settings -> API but does not establish the
+exact buttons or layout for every account; do not invent an ID or rotate a key
+just to try to make these fields appear. Input is hidden when pasting into the
+terminal, including the Client ID prompt.
+
 ## Transaction import gaps
 
 The [transaction reference](https://docs-financy.open-finance.ai/reference/gettransactions)

@@ -257,11 +257,26 @@ def connect_interactively(
         if not sys.stdin.isatty():
             raise FinancyError("validation")
         read_secret = getpass.getpass
-    print("Financy → Settings → API. Enter the three values locally; input is hidden.")
+    print(
+        "Open https://financy.open-finance.ai -> Settings -> API.\n"
+        "An 'API available on your plan' message confirms eligibility; it is not a credential.\n"
+        "Find the actual clientId, clientSecret and userId values supplied by Financy.\n"
+        "Client ID identifies your Financy API client; do not enter a bank login or invent a value.\n"
+        "If you only see the availability message, press Ctrl+C and ask Financy support where\n"
+        "your API credentials are shown. The public guide does not show the exact screen.\n"
+        "Copy each value into this terminal when prompted. Pasted input stays invisible;\n"
+        "press Enter after pasting. Do not paste credentials into chat."
+    )
     credentials = Credentials(
-        clientId=read_secret("clientId: ").strip(),
-        clientSecret=read_secret("clientSecret: ").strip(),
-        userId=read_secret("userId: ").strip(),
+        clientId=read_secret(
+            "[1/3] Client ID - copy the clientId value from Financy: "
+        ).strip(),
+        clientSecret=read_secret(
+            "[2/3] Client secret - copy the clientSecret value: "
+        ).strip(),
+        userId=read_secret(
+            "[3/3] User ID - copy the userId value from the same screen: "
+        ).strip(),
     )
     client = FinancyClient(credentials, transport)
     summary = client.connection_summary()

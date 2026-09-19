@@ -180,8 +180,10 @@ def live_requirements(ask: Callable[[str], str] = input) -> None:
         "2. In Financy, add Bank Leumi (or your bank/card) and follow the bank's hosted "
         "consent screens. Complete the permissions there and return to Financy. "
         "Do not enter your bank password into this installer.",
-        "3. Open Settings -> API in Financy. Have clientId, clientSecret and userId ready. "
-        "The next step reads them with hidden input and stores them in macOS Keychain.",
+        "3. Open Settings -> API in Financy and locate the actual clientId, clientSecret "
+        "and userId values. An API availability badge only confirms your plan includes access. "
+        "If those fields are missing, stop here and ask Financy support where to find them. "
+        "The next step reads these values with hidden input and stores them in macOS Keychain.",
         "4. This setup verifies credentials and discovers accounts only. Live transaction import "
         "is not enabled: documented status values and pending/final links still need confirmation. "
         "Production Netflix Conductor integration also awaits its deployed version and SDK.",
