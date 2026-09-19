@@ -263,6 +263,37 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(august["categories"]["תחבורה בארץ"], Decimal("19.90"))
         self.assertNotIn("מזון", august["categories"])
 
+    def test_pango_government_services_charge_is_domestic_transport(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(
+                merchantName="מ.תחבורה - פנגו מוביט",
+                category={"main": "UNCATEGORIZED", "sub": "GOVERNMENT SERVICES"},
+            )
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["תחבורה בארץ"], Decimal("19.90"))
+
+    def test_steam_is_leisure_and_esta_is_overseas_travel(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(
+                merchantName="STEAMGAMES.COM 4259522985",
+                category={"main": "SHOPPING", "sub": "SHOPPING_OTHER"},
+            ),
+            row(
+                "two",
+                merchantName="USCUSTOMS ESTA APPL PMT",
+                category={"main": "UNCATEGORIZED", "sub": "GOVERNMENT SERVICES"},
+            ),
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["פנאי"], Decimal("19.90"))
+        self.assertEqual(august["categories"]["טיולים בחו״ל"], Decimal("19.90"))
+        self.assertNotIn("קניות", august["categories"])
+
     def test_cli_uses_frozen_rates_after_resync_and_retains_report_on_failure(
         self,
     ) -> None:
@@ -561,6 +592,47 @@ class LiveTagTests(unittest.TestCase):
         self.assertEqual(bucket["breakdown"]["income"]["count"], 1)
         self.assertEqual(bucket["breakdown"]["unresolved_credit"]["count"], 1)
         self.assertEqual(report["review_counts"]["unresolved_credit"], 1)
+
+    def test_expense_rule_report_category_persists_and_is_validated(self) -> None:
+        with open_database(load_database_key(self.store), self.path) as db:
+            # A table from before general_category existed gains the column.
+            db.execute("DROP TABLE IF EXISTS live_tags")
+            db.execute(
+                "CREATE TABLE live_tags (internal_id TEXT PRIMARY KEY, "
+                "account_id TEXT, record_id TEXT, category TEXT, subcategory TEXT, "
+                "tag TEXT NOT NULL, note TEXT NOT NULL, priority INTEGER NOT NULL, "
+                "enabled INTEGER NOT NULL, created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL)"
+            )
+            for bad in (
+                LiveTagRule(tag="gift", category="TRANSFER", general_category="פנאי"),
+                LiveTagRule(tag="expense", category="TRANSFER", general_category="x"),
+            ):
+                with self.assertRaises(ValueError):
+                    save_tag_rule(db, bad)
+        self.save(
+            tag="expense",
+            account_id=self.account_id,
+            record_id="transfer",
+            general_category="פנאי",
+        )
+        self.assertEqual([r.general_category for r in self.rules()], ["פנאי"])
+
+    def test_amount_rule_matches_only_that_exact_amount(self) -> None:
+        with open_database(load_database_key(self.store), self.path) as db:
+            with self.assertRaises(ValueError):
+                save_tag_rule(
+                    db, LiveTagRule(tag="gift", category="TRANSFER", amount="x")
+                )
+        self.save(tag="self_transfer", category="TRANSFER", amount="-1")
+        for record in self.snapshot["records"]:
+            record = {**record, "amount": "-1.00"}
+            matching = record["category"] == "TRANSFER"
+            self.assertEqual(
+                resolve_tag(record, self.rules()),
+                "self_transfer" if matching else None,
+            )
+            self.assertIsNone(resolve_tag({**record, "amount": "-2"}, self.rules()))
 
     def test_category_rule_matches_every_record_in_that_category(self) -> None:
         self.save(tag="self_transfer", category="TRANSFER")
@@ -939,6 +1011,20 @@ class LiveTrendTests(unittest.TestCase):
         august = trend["currencies"]["ILS"]["2026-08"]
         self.assertEqual(august["categories"]["עמלות בנק"], Decimal("15"))
         self.assertEqual(august["total"], Decimal("135"))
+
+    def test_expense_tag_can_place_a_transfer_in_a_report_category(self) -> None:
+        rule = LiveTagRule(
+            tag="expense",
+            account_id=self.account_id,
+            record_id="aug-transfer",
+            general_category="טיולים בחו״ל",
+        )
+        trend = general_category_trend(self.snapshot, [rule])
+        august = trend["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["טיולים בחו״ל"], Decimal("500"))
+        self.assertEqual(august["categories"]["אחר"], Decimal("15"))
+        self.assertEqual(august["total"], Decimal("635"))
+        self.assertEqual(august["total_excluding_travel"], Decimal("135"))
 
     def test_simple_report_is_hebrew_and_flags_the_previous_month(self) -> None:
         html = simple_report_html(self.snapshot)

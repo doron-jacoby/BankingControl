@@ -62,7 +62,9 @@ and investment-account movements are not listed for review. HaKfar HaYarok charg
 Education, including the user-confirmed school name found in bank descriptions;
 only its canonical name is retained. תחנת החוף המנהרה charges are domestic
 transport (a user-confirmed car wash), despite Financy's FOOD_&_DRINKS/RESTAURANT
-category. There is no housing category. Unidentified
+category, and so are all Pango charges, including "מ.תחבורה - פנגו מוביט", which
+Financy files under GOVERNMENT SERVICES. Steam (STEAMGAMES) charges are leisure (games) rather than shopping,
+and US ESTA fees are overseas travel. There is no housing category. Unidentified
 expenses follow Other and are included in the **total excluding overseas travel**;
 travel is the next column. Unresolved non-expense movements remain separate.
 Flights go to overseas travel; transport with a foreign merchant country goes
@@ -138,6 +140,7 @@ finance="$HOME/Library/Application Support/PersonalFinance/runtime/bin/finance"
 "$finance" report --detailed   # English diagnostic analysis.html + analysis.pdf there
 "$finance" tag self_transfer --account-id ACC --record-id TX  # One specific record
 "$finance" tag gift --category TRANSFER --subcategory PRIVATE # A recurring pattern
+"$finance" tag expense --account-id ACC --record-id TX --general-category פנאי
 "$finance" tags                # List saved reconciliation rules in priority order
 "$finance" --demo status
 "$finance" --demo sync
@@ -181,7 +184,10 @@ plus `--record-id`, or a reusable pattern by `--category`/`--subcategory`
 next to the snapshot, survive `sync` replacing the snapshot, and are reapplied
 every time `monthly` or `report` runs, so adding or editing a rule updates
 historical months without re-entering each transaction. Higher `--priority`
-rules are checked first; the first match wins.
+rules are checked first; the first match wins. `--amount` narrows a pattern to one exact
+signed amount (a standing order with a fixed sum), and an `expense` rule may set
+`--general-category` to one of the report's categories or אחר, placing an
+identified bank transfer (a trip payment, an accountant's fee) in that column.
 
 Use the current month for the bundled demo. Monthly totals are separated by
 currency and use Asia/Jerusalem by default (`monthly --timezone UTC` is also

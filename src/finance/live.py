@@ -183,6 +183,10 @@ GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+TAG_GENERAL_CATEGORIES = {
+    *(label for label, _ in GENERAL_CATEGORIES),
+    OTHER_CATEGORY_LABEL,
+}
 HEBREW_MONTHS = {
     1: "ינואר",
     2: "פברואר",
@@ -255,6 +259,11 @@ class LiveTagRule:
     record_id: str | None = None
     category: str | None = None
     subcategory: str | None = None
+    # An "expense" rule may place the record in a report category, for bank
+    # transfers the user identified (a trip payment, an accountant's fee).
+    general_category: str | None = None
+    # Exact signed amount, for a standing order identified by its fixed sum.
+    amount: str | None = None
     note: str = ""
     priority: int = 0
     enabled: bool = True
@@ -265,6 +274,21 @@ class LiveTagRule:
     def __post_init__(self) -> None:
         require_aware(self.created_at)
         require_aware(self.updated_at)
+
+
+def _create_tags_table(db: sqlcipher.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS live_tags ("
+        "internal_id TEXT PRIMARY KEY, account_id TEXT, record_id TEXT, "
+        "category TEXT, subcategory TEXT, tag TEXT NOT NULL, note TEXT NOT NULL, "
+        "priority INTEGER NOT NULL, enabled INTEGER NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, general_category TEXT, "
+        "amount TEXT)"
+    )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(live_tags)")}
+    for column in ("general_category", "amount"):
+        if column not in columns:
+            db.execute(f"ALTER TABLE live_tags ADD COLUMN {column} TEXT")
 
 
 def save_tag_rule(db: sqlcipher.Connection, rule: LiveTagRule) -> None:
@@ -286,20 +310,29 @@ def save_tag_rule(db: sqlcipher.Connection, rule: LiveTagRule) -> None:
             raise ValueError("Account and record IDs must be non-empty and bounded")
     if len(rule.note) > 2000:
         raise ValueError("Note is too long")
+    if rule.amount is not None:
+        try:
+            amount = Decimal(rule.amount)
+        except InvalidOperation as error:
+            raise ValueError("Amount must be a valid decimal") from error
+        if not amount.is_finite():
+            raise ValueError("Amount must be a finite decimal")
+    if rule.general_category is not None:
+        if rule.tag != "expense":
+            raise ValueError("Only an expense rule can set a report category")
+        if rule.general_category not in TAG_GENERAL_CATEGORIES:
+            raise ValueError("Unknown report category")
+    _create_tags_table(db)
     db.execute(
-        "CREATE TABLE IF NOT EXISTS live_tags ("
-        "internal_id TEXT PRIMARY KEY, account_id TEXT, record_id TEXT, "
-        "category TEXT, subcategory TEXT, tag TEXT NOT NULL, note TEXT NOT NULL, "
-        "priority INTEGER NOT NULL, enabled INTEGER NOT NULL, "
-        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-    )
-    db.execute(
-        "INSERT INTO live_tags VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO live_tags (internal_id, account_id, record_id, category, "
+        "subcategory, tag, note, priority, enabled, created_at, updated_at, "
+        "general_category, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(internal_id) DO UPDATE SET account_id=excluded.account_id, "
         "record_id=excluded.record_id, category=excluded.category, "
         "subcategory=excluded.subcategory, tag=excluded.tag, note=excluded.note, "
         "priority=excluded.priority, enabled=excluded.enabled, "
-        "updated_at=excluded.updated_at",
+        "updated_at=excluded.updated_at, "
+        "general_category=excluded.general_category, amount=excluded.amount",
         (
             rule.internal_id,
             rule.account_id,
@@ -312,18 +345,14 @@ def save_tag_rule(db: sqlcipher.Connection, rule: LiveTagRule) -> None:
             rule.enabled,
             rule.created_at.isoformat(),
             rule.updated_at.isoformat(),
+            rule.general_category,
+            rule.amount,
         ),
     )
 
 
 def load_tag_rules(db: sqlcipher.Connection) -> list[LiveTagRule]:
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS live_tags ("
-        "internal_id TEXT PRIMARY KEY, account_id TEXT, record_id TEXT, "
-        "category TEXT, subcategory TEXT, tag TEXT NOT NULL, note TEXT NOT NULL, "
-        "priority INTEGER NOT NULL, enabled INTEGER NOT NULL, "
-        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-    )
+    _create_tags_table(db)
     result = []
     for row in dictionaries(
         db,
@@ -336,7 +365,9 @@ def load_tag_rules(db: sqlcipher.Connection) -> list[LiveTagRule]:
     return result
 
 
-def resolve_tag(record: dict[str, Any], rules: Sequence[LiveTagRule]) -> str | None:
+def resolve_rule(
+    record: dict[str, Any], rules: Sequence[LiveTagRule]
+) -> LiveTagRule | None:
     """First matching rule wins; rules are pre-sorted by priority, then ID."""
     for rule in rules:
         if (
@@ -344,9 +375,21 @@ def resolve_tag(record: dict[str, Any], rules: Sequence[LiveTagRule]) -> str | N
             and (rule.account_id is None or rule.account_id == record["account_id"])
             and (rule.category is None or rule.category == record["category"])
             and (rule.subcategory is None or rule.subcategory == record["subcategory"])
+            and (
+                rule.amount is None
+                or (
+                    record["amount"] is not None
+                    and Decimal(rule.amount) == Decimal(record["amount"])
+                )
+            )
         ):
-            return rule.tag
+            return rule
     return None
+
+
+def resolve_tag(record: dict[str, Any], rules: Sequence[LiveTagRule]) -> str | None:
+    rule = resolve_rule(record, rules)
+    return rule.tag if rule else None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -495,6 +538,22 @@ def _car_wash_merchant(value: str) -> bool:
     # Financy files this under FOOD_&_DRINKS/RESTAURANT; it is actually a car wash.
     normalized = " ".join(re.findall(r"[\w]+", value.upper()))
     return any(name in normalized for name in ("תחנת החוף המנהרה",))
+
+
+def _pango_merchant(value: str) -> bool:
+    # Pango parking and "מ.תחבורה - פנגו מוביט" (filed as GOVERNMENT SERVICES) are car costs.
+    return "פנגו" in value or "PANGO" in value.upper()
+
+
+def _games_merchant(value: str) -> bool:
+    # Financy files Steam under SHOPPING/SHOPPING_OTHER; it is games (leisure).
+    normalized = " ".join(re.findall(r"[\w]+", value.upper()))
+    return any(name in normalized for name in ("STEAMGAMES", "STEAM GAMES"))
+
+
+def _esta_merchant(value: str) -> bool:
+    # US ESTA fees arrive as UNCATEGORIZED/GOVERNMENT SERVICES; they are travel.
+    return "ESTA" in re.findall(r"[\w]+", value.upper())
 
 
 def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecord:
@@ -823,7 +882,8 @@ def _flag_debits(
     with localcontext() as context:
         context.prec = 400 + len(str(len(records) + len(history)))
         for record in records:
-            tag = resolve_tag(record, rules)
+            rule = resolve_rule(record, rules)
+            tag = rule.tag if rule else None
             if tag in {"self_transfer", "gift", "income"}:
                 continue
             amount = Decimal(record["amount"]) if record["amount"] is not None else None
@@ -844,7 +904,7 @@ def _flag_debits(
                     reasons.append("fee_like_label")
                 if "INSURANCE" in tokens:
                     reasons.append("insurance_review")
-                if (
+                if not (rule and rule.general_category) and (
                     _general_category(
                         record["category"],
                         record["subcategory"],
@@ -876,8 +936,12 @@ def _general_category(
         return BANK_FEES_CATEGORY_LABEL
     if _school_merchant(merchant):
         return "חינוך"
-    if _car_wash_merchant(merchant):
+    if _car_wash_merchant(merchant) or _pango_merchant(merchant):
         return "תחבורה בארץ"
+    if _games_merchant(merchant):
+        return "פנאי"
+    if _esta_merchant(merchant):
+        return GENERAL_CATEGORIES[-1][0]
     tokens = _tokens(f"{category} {subcategory}")
     travel_label, travel_words = GENERAL_CATEGORIES[-1]
     transport_words = GENERAL_CATEGORIES[2][1]
@@ -971,13 +1035,14 @@ def general_category_trend(
                 amount = (
                     Decimal(record["amount"]) if record["amount"] is not None else None
                 )
+                rule = resolve_rule(record, rules)
                 reason, included = _reconcile_reason(
-                    record, amount, resolve_tag(record, rules)
+                    record, amount, rule.tag if rule else None
                 )
                 if not included or reason == "income":
                     continue
                 assert amount is not None
-                bucket = _general_category(
+                bucket = (rule and rule.general_category) or _general_category(
                     record["category"],
                     record["subcategory"],
                     record.get("merchant_country", ""),
