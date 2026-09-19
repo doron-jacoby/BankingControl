@@ -86,6 +86,12 @@ Other unresolved movements remain visible for review. A label is a reason to wit
 of a matched transfer. Explicit `expense` tags override the withholding; a
 positive amount tagged as expense reduces spending (a confirmed refund).
 `self_transfer`, `gift` and `income` retain their manual meanings.
+An explicit `investment` tag excludes a movement from both spending and review.
+An account-scoped `--transfer-type ZAHAV` rule matches incoming and outgoing
+ZAHAV transfers only; ordinary transfers and other accounts are unaffected.
+The transfer type is retained from the source's explicit ZAHAV description.
+`--general-category` saves the user's category and `--amount` matches the exact
+signed source amount, including when the report converts foreign currency.
 
 Review lists include fees, insurance, unclassified charges, unresolved movements,
 and missing amounts/statuses. Increases above 125% of the median of at least two
@@ -165,7 +171,9 @@ window. Recipient names (`creditorName`) are retained in the encrypted snapshot
 and shown in local reports; they also serve as the merchant fallback when none is
 supplied. Names are whitespace-normalized, capped at 160 characters, and long
 digit sequences are redacted. Descriptions and recipient account details are
-still discarded. Run `finance sync` then `finance report` to populate names for
+still discarded. Sender names (`debtorName`) are also retained with the same
+sanitization and serve as the merchant fallback for incoming movements.
+Run `finance sync` then `finance report` to populate names for
 the requested history; older snapshots remain readable. Sync output contains
 only operational metadata, without names.
 `monthly` reads it offline; `report` additionally fetches any missing

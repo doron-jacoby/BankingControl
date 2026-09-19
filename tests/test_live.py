@@ -39,6 +39,7 @@ from finance.live import (
     recurring_merchants,
     report_html,
     resolve_label,
+    resolve_rule,
     resolve_tag,
     save_label_rule,
     save_tag_rule,
@@ -72,6 +73,40 @@ def row(identity: str = "one", **updates: object) -> dict[str, object]:
 
 
 class LiveTests(unittest.TestCase):
+    def test_sender_and_zahav_type_survive_sync_without_raw_description(self) -> None:
+        self.client.transaction_rows.return_value = [
+            row(
+                debtorName="  Example Sender 123456789 ",
+                description={
+                    "initialClean": 'העברת זה"ב',
+                    "additionalInfo": "private data",
+                },
+                amount={"chargedAmount": {"amount": Decimal("100"), "currency": "ILS"}},
+            )
+        ]
+        self.sync()
+        snapshot = load_snapshot(self.path, self.store)
+        record = snapshot["records"][0]
+        self.assertEqual(record["sender_name"], "Example Sender …")
+        self.assertEqual(record["merchant"], record["sender_name"])
+        self.assertEqual(record["transfer_type"], "ZAHAV")
+        self.assertNotIn("private data", json.dumps(snapshot))
+        self.assertIn("Example Sender …", simple_report_html(snapshot))
+        self.client.transaction_rows.return_value = [
+            row(description={"initialClean": "העברת זה״ב יוצאת"})
+        ]
+        self.sync()
+        self.assertEqual(
+            load_snapshot(self.path, self.store)["records"][0]["transfer_type"], "ZAHAV"
+        )
+        self.client.transaction_rows.return_value = [
+            row(description={"initialClean": "העברה רגילה"})
+        ]
+        self.sync()
+        self.assertEqual(
+            load_snapshot(self.path, self.store)["records"][0]["transfer_type"], ""
+        )
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -585,6 +620,40 @@ class LiveTests(unittest.TestCase):
 
 
 class LiveTagTests(unittest.TestCase):
+    def test_saved_zahav_scope_and_refund_categories(self) -> None:
+        self.save(tag="investment", account_id=self.account_id, transfer_type="ZAHAV")
+        self.save(
+            tag="expense", category="SHOPPING", amount="25", general_category="קניות"
+        )
+        rules = self.rules()
+        base = {**self.snapshot["records"][0], "transfer_type": "ZAHAV"}
+        for amount in ("100", "-100", None):
+            record = {**base, "amount": amount}
+            self.assertEqual(resolve_tag(record, rules), "investment")
+            report = summarize({**self.snapshot, "records": [record]}, "2026-08", rules)
+            self.assertEqual(report["reconciled"]["ILS"]["spend"], Decimal(0))
+            self.assertEqual(report["flagged_for_review"], [])
+        self.assertIsNone(resolve_tag({**base, "account_id": "another-account"}, rules))
+        self.assertIsNone(resolve_tag({**base, "transfer_type": ""}, rules))
+        refund = {**base, "transfer_type": "", "category": "SHOPPING", "amount": "25"}
+        self.assertEqual(
+            general_category_trend({**self.snapshot, "records": [refund]}, rules)[
+                "currencies"
+            ]["ILS"]["2026-08"]["categories"],
+            {"קניות": Decimal(-25)},
+        )
+        self.assertIsNone(resolve_tag({**refund, "amount": "26"}, rules))
+        from finance.exchange import shekel_record
+
+        converted = shekel_record(
+            {**refund, "currency": "USD"}, {("USD", "2026-08"): Decimal(3)}
+        )
+        matched_rule = resolve_rule(converted, rules)
+        assert matched_rule is not None
+        self.assertEqual(matched_rule.general_category, "קניות")
+        with self.assertRaises(ValueError):
+            self.save(tag="investment", category="TRANSFER", transfer_type="ZAHAV")
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

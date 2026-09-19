@@ -53,7 +53,7 @@ LIMITATIONS = (
     "adjustments reduce spending. Requested dates do not prove bank coverage. "
     "Category and anomaly rules are local hints, not verified findings."
 )
-TAGS = {"self_transfer", "gift", "income", "expense"}
+TAGS = {"self_transfer", "gift", "income", "expense", "investment"}
 LABEL_PATTERN = re.compile(r"[A-Z][A-Z_& -]{0,79}")
 FEE_KEYWORDS = {
     "FEE",
@@ -189,6 +189,8 @@ GENERAL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 TAG_GENERAL_CATEGORIES = {
     *(label for label, _ in GENERAL_CATEGORIES),
     OTHER_CATEGORY_LABEL,
+    UNIDENTIFIED_CATEGORY_LABEL,
+    CARD_EXPENSE_CATEGORY_LABEL,
 }
 HEBREW_MONTHS = {
     1: "ינואר",
@@ -246,6 +248,8 @@ class LiveRecord:
     purchase_day: str = ""
     # Card rows only: the bank billing date, for matching checking-account settlements.
     charge_day: str = ""
+    sender_name: str = ""
+    transfer_type: str = ""
 
 
 def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
@@ -258,8 +262,8 @@ def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
 class LiveTagRule:
     """A user-confirmed reconciliation decision for provisional live records.
 
-    Recipient names may be available, but self-transfers and gifts cannot
-    be inferred from names, amounts or categories alone; the user identifies them from
+    Self-transfers and gifts cannot be inferred from names, amounts or categories
+    alone; the user identifies them from
     their own bank/Financy records and this rule remembers that decision so it
     can be reapplied to history and future syncs without repeating the review.
     """
@@ -274,6 +278,7 @@ class LiveTagRule:
     general_category: str | None = None
     # Exact signed amount, for a standing order identified by its fixed sum.
     amount: str | None = None
+    transfer_type: str | None = None
     note: str = ""
     priority: int = 0
     enabled: bool = True
@@ -296,7 +301,7 @@ def _create_tags_table(db: sqlcipher.Connection) -> None:
         "amount TEXT)"
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(live_tags)")}
-    for column in ("general_category", "amount"):
+    for column in ("general_category", "amount", "transfer_type"):
         if column not in columns:
             db.execute(f"ALTER TABLE live_tags ADD COLUMN {column} TEXT")
 
@@ -328,21 +333,26 @@ def save_tag_rule(db: sqlcipher.Connection, rule: LiveTagRule) -> None:
         if not amount.is_finite():
             raise ValueError("Amount must be a finite decimal")
     if rule.general_category is not None:
-        if rule.tag != "expense":
-            raise ValueError("Only an expense rule can set a report category")
+        if rule.tag not in {"expense", "income"}:
+            raise ValueError("Only an expense or income rule can set a report category")
         if rule.general_category not in TAG_GENERAL_CATEGORIES:
             raise ValueError("Unknown report category")
+    if rule.transfer_type is not None and (
+        rule.transfer_type != "ZAHAV" or rule.account_id is None
+    ):
+        raise ValueError("A ZAHAV rule requires its account ID")
     _create_tags_table(db)
     db.execute(
         "INSERT INTO live_tags (internal_id, account_id, record_id, category, "
         "subcategory, tag, note, priority, enabled, created_at, updated_at, "
-        "general_category, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "general_category, amount, transfer_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(internal_id) DO UPDATE SET account_id=excluded.account_id, "
         "record_id=excluded.record_id, category=excluded.category, "
         "subcategory=excluded.subcategory, tag=excluded.tag, note=excluded.note, "
         "priority=excluded.priority, enabled=excluded.enabled, "
         "updated_at=excluded.updated_at, "
-        "general_category=excluded.general_category, amount=excluded.amount",
+        "general_category=excluded.general_category, amount=excluded.amount, "
+        "transfer_type=excluded.transfer_type",
         (
             rule.internal_id,
             rule.account_id,
@@ -357,6 +367,7 @@ def save_tag_rule(db: sqlcipher.Connection, rule: LiveTagRule) -> None:
             rule.updated_at.isoformat(),
             rule.general_category,
             rule.amount,
+            rule.transfer_type,
         ),
     )
 
@@ -386,10 +397,15 @@ def resolve_rule(
             and (rule.category is None or rule.category == record["category"])
             and (rule.subcategory is None or rule.subcategory == record["subcategory"])
             and (
+                rule.transfer_type is None
+                or rule.transfer_type == record.get("transfer_type")
+            )
+            and (
                 rule.amount is None
                 or (
                     record["amount"] is not None
-                    and Decimal(rule.amount) == Decimal(record["amount"])
+                    and Decimal(rule.amount)
+                    == Decimal(record.get("source_amount", record["amount"]))
                 )
             )
         ):
@@ -644,8 +660,21 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
         if not isinstance(recipient, str):
             raise ValueError
         recipient = re.sub(r"\d{6,}", "…", " ".join(recipient.split()))[:160]
-        merchant = row.get("merchantName") or recipient
+        sender = row.get("debtorName") or ""
+        if not isinstance(sender, str):
+            raise ValueError
+        sender = re.sub(r"\d{6,}", "…", " ".join(sender.split()))[:160]
+        merchant = row.get("merchantName") or (
+            sender if amount is not None and amount > 0 else recipient
+        )
         description = row.get("description")
+        transfer_type = ""
+        if isinstance(description, dict) and any(
+            isinstance(description.get(key), str)
+            and re.search(r'(?:^|\s)העברת\s+זה["״]?ב(?:\s|$)', description[key])
+            for key in ("initialClean", "description")
+        ):
+            transfer_type = "ZAHAV"
         if isinstance(description, dict) and any(
             isinstance(value, str) and _school_merchant(value)
             for value in description.values()
@@ -677,6 +706,8 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             installment_total=installment[1] if installment else None,
             purchase_day=purchase_day,
             charge_day=charge_day,
+            sender_name=sender,
+            transfer_type=transfer_type,
         )
     except (
         KeyError,
@@ -805,6 +836,8 @@ def _reconcile_reason(
         return "investment_account", False
     if tag == "self_transfer":
         return "self_transfer", False
+    if tag == "investment":
+        return "investment", False
     if tag == "gift":
         return "gift", False
     if tag == "income":
@@ -1213,7 +1246,7 @@ def _included_debit(
     amount = Decimal(record["amount"])
     if amount >= 0:
         return None
-    if resolve_tag(record, rules) in {"self_transfer", "gift", "income"}:
+    if resolve_tag(record, rules) in {"self_transfer", "gift", "income", "investment"}:
         return None
     return amount
 
@@ -1807,13 +1840,13 @@ def simple_report_html(
     ]
     if flagged:
         flagged_html = (
-            "<div class='scroll'><table><thead><tr><th>תאריך</th><th>חשבון</th><th>נמען / בית עסק / נושא</th>"
+            "<div class='scroll'><table><thead><tr><th>תאריך</th><th>חשבון</th><th>שולח / מקבל / בית עסק / נושא</th>"
             "<th>יחידות</th><th>סכום</th><th>למה לבדוק</th></tr></thead><tbody>"
             + "".join(
                 "<tr>"
                 f"<td dir='ltr'>{escape(item['day'])}</td>"
                 f"<td>{account_labels[item['account_id']]} · {escape(ACCOUNT_TYPE_LABELS_HE.get(item['account_type'], item['account_type']))}</td>"
-                f"<td>{escape(item.get('recipient_name') or item.get('merchant') or _general_category(item['category'], item['subcategory'], item.get('merchant_country', ''), item.get('merchant', '')))}"
+                f"<td>{escape(item.get('merchant') or item.get('sender_name') or item.get('recipient_name') or _general_category(item['category'], item['subcategory'], item.get('merchant_country', ''), item.get('merchant', '')))}"
                 "<details><summary>פרטי זיהוי</summary>"
                 f"<p dir='ltr'>{escape(item['category'])} / {escape(item['subcategory'])}<br>"
                 f"{escape(item['id'])}<br>{escape(item['account_id'])}</p></details></td>"
