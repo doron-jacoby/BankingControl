@@ -35,6 +35,14 @@ completed calendar months, general categories plus Unidentified, and review item
 for the latest completed month. `report --simple` remains a compatible alias;
 `report --detailed` exports the English diagnostic tables.
 
+Reports default to `~/Documents/PersonalFinance`, independently of the database
+location. Each `finance report` saves both `monthly-overview.html` and
+`monthly-overview.pdf`; `--detailed` saves `analysis.html` and `analysis.pdf`.
+`--output /path/report.html` (or `.pdf`) overrides the destination for both files.
+PDF export uses the installed Google Chrome in `/Applications`, with a temporary
+browser profile and no upload. The Hebrew PDF uses landscape A4 pages.
+If PDF export fails, the command reports failure and preserves the previous PDF.
+
 All report amounts are shown in shekels, in thousands with exactly one decimal.
 USD and EUR are converted to ILS using the Bank of Israel's last published daily
 representative rate on or before each transaction month's end. A rate is saved
@@ -75,7 +83,7 @@ future charges. These are review hints, not proof of an error.
 Missing and partial months are labelled explicitly; requested dates alone do not
 prove complete provider history. The latest completed month is included when the
 snapshot ends on its last day. Identifiers are available in collapsed review
-rows so users can trace and tag a movement. All exports remain private local HTML.
+rows so users can trace and tag a movement. All exports remain private local HTML/PDF.
 
 The default report also includes a fees/insurance/subscriptions/standing-orders
 section: a twelve-month trend of each group's total, plus the ten most expensive
@@ -109,9 +117,9 @@ finance="$HOME/Library/Application Support/PersonalFinance/runtime/bin/finance"
 "$finance" sync                # Twelve prior calendar months plus this month to date
 "$finance" sync --from 2026-06-01 --to 2026-09-19
 "$finance" monthly 2026-08      # Provisional live movements/category breakdown
-"$finance" report              # Hebrew monthly-overview.html beside the encrypted DB
+"$finance" report              # Hebrew HTML + PDF in ~/Documents/PersonalFinance
 "$finance" report --simple     # Same Hebrew overview (compatibility alias)
-"$finance" report --detailed   # English diagnostic analysis.html
+"$finance" report --detailed   # English diagnostic analysis.html + analysis.pdf there
 "$finance" tag self_transfer --account-id ACC --record-id TX  # One specific record
 "$finance" tag gift --category TRANSFER --subcategory PRIVATE # A recurring pattern
 "$finance" tags                # List saved reconciliation rules in priority order
@@ -128,8 +136,8 @@ finance="$HOME/Library/Application Support/PersonalFinance/runtime/bin/finance"
 
 Each live sync atomically replaces the previous snapshot with the requested date
 window. `monthly` reads it offline; `report` additionally fetches any missing
-month-end exchange rates, then reuses the saved rates offline. The HTML report contains plaintext
-aggregates, is written with mode 0600, and loads no external assets; the database
+month-end exchange rates, then reuses the saved rates offline. The HTML and PDF reports contain plaintext
+aggregates and are written with mode 0600. The HTML loads no external assets; the database
 remains encrypted. Identified purchases can be combined across bank and card accounts, but unresolved
 settlements/transfers are withheld. Source statuses other than `BOOKED` remain
 outside spending totals. Credits are not assumed to be

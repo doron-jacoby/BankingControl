@@ -8,6 +8,7 @@ import calendar
 import json
 import os
 import re
+import subprocess
 import tempfile
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -338,6 +339,134 @@ def resolve_tag(record: dict[str, Any], rules: Sequence[LiveTagRule]) -> str | N
             and (rule.subcategory is None or rule.subcategory == record["subcategory"])
         ):
             return rule.tag
+    return None
+
+
+@dataclass(frozen=True, kw_only=True)
+class LiveLabelRule:
+    """A user-given display name for records Financy exposes with no merchant.
+
+    Standing orders (DIRECT_DEBIT) carry no counterparty name from Financy, so
+    reports fall back to their raw category/subcategory. This rule lets the
+    user attach a recognizable name (e.g. "ועד בית") once it is identified.
+    """
+
+    label: str
+    account_id: str | None = None
+    record_id: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    amount: str | None = None
+    priority: int = 0
+    enabled: bool = True
+    internal_id: str = field(default_factory=new_id)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        require_aware(self.created_at)
+        require_aware(self.updated_at)
+
+
+def save_label_rule(db: sqlcipher.Connection, rule: LiveLabelRule) -> None:
+    if not rule.label.strip():
+        raise ValueError("Label must not be empty")
+    if len(rule.label) > 200:
+        raise ValueError("Label is too long")
+    if not (
+        rule.record_id
+        or rule.category
+        or rule.subcategory
+        or rule.account_id
+        or rule.amount
+    ):
+        raise ValueError(
+            "A rule must match on a record, account, category, subcategory or amount"
+        )
+    if rule.record_id is not None and rule.account_id is None:
+        raise ValueError("A record-specific rule requires its account ID")
+    for value in (rule.category, rule.subcategory):
+        if value is not None and not LABEL_PATTERN.fullmatch(value):
+            raise ValueError(
+                "Category and subcategory must match Financy's label format"
+            )
+    for value in (rule.account_id, rule.record_id):
+        if value is not None and (not value.strip() or len(value) > 8192):
+            raise ValueError("Account and record IDs must be non-empty and bounded")
+    if rule.amount is not None:
+        try:
+            amount = Decimal(rule.amount)
+        except InvalidOperation as error:
+            raise ValueError("Amount must be a valid decimal") from error
+        if not amount.is_finite():
+            raise ValueError("Amount must be a finite decimal")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS live_labels ("
+        "internal_id TEXT PRIMARY KEY, account_id TEXT, record_id TEXT, "
+        "category TEXT, subcategory TEXT, amount TEXT, label TEXT NOT NULL, "
+        "priority INTEGER NOT NULL, enabled INTEGER NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "INSERT INTO live_labels VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(internal_id) DO UPDATE SET account_id=excluded.account_id, "
+        "record_id=excluded.record_id, category=excluded.category, "
+        "subcategory=excluded.subcategory, amount=excluded.amount, "
+        "label=excluded.label, priority=excluded.priority, "
+        "enabled=excluded.enabled, updated_at=excluded.updated_at",
+        (
+            rule.internal_id,
+            rule.account_id,
+            rule.record_id,
+            rule.category,
+            rule.subcategory,
+            rule.amount,
+            rule.label,
+            rule.priority,
+            rule.enabled,
+            rule.created_at.isoformat(),
+            rule.updated_at.isoformat(),
+        ),
+    )
+
+
+def load_label_rules(db: sqlcipher.Connection) -> list[LiveLabelRule]:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS live_labels ("
+        "internal_id TEXT PRIMARY KEY, account_id TEXT, record_id TEXT, "
+        "category TEXT, subcategory TEXT, amount TEXT, label TEXT NOT NULL, "
+        "priority INTEGER NOT NULL, enabled INTEGER NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    result = []
+    for row in dictionaries(
+        db,
+        "SELECT * FROM live_labels WHERE enabled=1 ORDER BY priority DESC, internal_id",
+    ):
+        for name in ("created_at", "updated_at"):
+            row[name] = datetime.fromisoformat(row[name])
+        row["enabled"] = bool(row["enabled"])
+        result.append(LiveLabelRule(**row))
+    return result
+
+
+def resolve_label(record: dict[str, Any], rules: Sequence[LiveLabelRule]) -> str | None:
+    """First matching rule wins; rules are pre-sorted by priority, then ID."""
+    for rule in rules:
+        if (
+            (rule.record_id is None or rule.record_id == record["id"])
+            and (rule.account_id is None or rule.account_id == record["account_id"])
+            and (rule.category is None or rule.category == record["category"])
+            and (rule.subcategory is None or rule.subcategory == record["subcategory"])
+            and (
+                rule.amount is None
+                or (
+                    record["amount"] is not None
+                    and Decimal(rule.amount) == Decimal(record["amount"])
+                )
+            )
+        ):
+            return rule.label
     return None
 
 
@@ -847,6 +976,7 @@ def expense_subjects(
     records: Sequence[dict[str, Any]],
     rules: Sequence[LiveTagRule],
     predicate: Callable[[dict[str, Any]], bool],
+    labels: Sequence[LiveLabelRule] = (),
 ) -> list[dict[str, Any]]:
     """Debits matching predicate, grouped by merchant and sorted most expensive first."""
     groups: dict[str, dict[str, Any]] = {}
@@ -858,6 +988,7 @@ def expense_subjects(
                 continue
             subject = (
                 record.get("merchant")
+                or resolve_label(record, labels)
                 or f"ללא שם · {record['category']} / {record['subcategory']}"
             )
             bucket = groups.setdefault(
@@ -1204,6 +1335,58 @@ def write_report(
     _write_atomic_html(report_html(snapshot, rules), output)
 
 
+class PDFExportError(ValueError):
+    """A local PDF could not be produced; preserve the previous PDF."""
+
+
+def write_report_pdf(html: Path) -> Path:
+    output = html.with_suffix(".pdf")
+    chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if not chrome.is_file():
+        raise PDFExportError("PDF export requires Google Chrome in /Applications.")
+    with tempfile.TemporaryDirectory(prefix=".finance-pdf-", dir=output.parent) as work:
+        temporary = Path(work) / "report.pdf"
+        try:
+            try:
+                subprocess.run(
+                    [
+                        str(chrome),
+                        "--headless",
+                        "--disable-gpu",
+                        "--disable-background-networking",
+                        "--disable-extensions",
+                        "--disable-sync",
+                        "--no-first-run",
+                        "--no-pdf-header-footer",
+                        f"--user-data-dir={Path(work) / 'profile'}",
+                        f"--print-to-pdf={temporary.resolve()}",
+                        html.resolve().as_uri(),
+                    ],
+                    check=True,
+                    timeout=15,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except subprocess.TimeoutExpired:
+                # Chrome on macOS can stay alive after printing; run() kills it
+                # on timeout. Accept only a complete PDF, never a partial export.
+                pass
+            content = temporary.read_bytes()
+            if not content.startswith(b"%PDF-") or not content.rstrip().endswith(
+                b"%%EOF"
+            ):
+                raise PDFExportError(
+                    "Chrome did not produce a complete PDF; the previous PDF was preserved."
+                )
+            temporary.chmod(0o600)
+            os.replace(temporary, output)
+        except (OSError, subprocess.SubprocessError):
+            raise PDFExportError(
+                "PDF export failed; the previous PDF was preserved. Check Google Chrome."
+            ) from None
+    return output
+
+
 def _display_money(value: Decimal, currency: str) -> str:
     with localcontext() as context:
         context.prec = 410
@@ -1216,6 +1399,7 @@ def simple_report_html(
     snapshot: dict[str, Any],
     rules: Sequence[LiveTagRule] = (),
     rates: dict[tuple[str, str], Decimal] | None = None,
+    label_rules: Sequence[LiveLabelRule] = (),
 ) -> str:
     """Twelve completed months in shekels, using saved month-end exchange rates."""
     info = snapshot["info"]
@@ -1299,7 +1483,7 @@ def simple_report_html(
                 )
                 + f"<td><strong>{money(months[key]['total_excluding_travel'], currency)}</strong></td>"
                 + f"<td>{money(months[key]['categories'].get(travel_label, Decimal(0)), currency)}</td>"
-                + f"<td>{unresolved if unresolved else '—'}</td></tr>"
+                + f"<td>{unresolved}</td></tr>"
             )
         trend_sections.append(
             f"<h3>{escape(units(currency))}</h3><div class='scroll'><table><thead><tr><th>חודש</th>"
@@ -1415,7 +1599,9 @@ def simple_report_html(
     else:
         top_list_sections = []
         for top_label, predicate in top_category_defs:
-            subjects = expense_subjects(last_month_records, rules, predicate)
+            subjects = expense_subjects(
+                last_month_records, rules, predicate, label_rules
+            )
             top_ten = subjects[:10]
             if top_ten:
                 list_table = (
@@ -1472,14 +1658,17 @@ def simple_report_html(
         "td:first-child{white-space:nowrap}.scroll{overflow-x:auto}small{color:#637080}"
         ".note{border-right:4px solid #c38314;padding:12px;background:#fff8e9;line-height:1.6;font-size:14px}"
         "summary{cursor:pointer;font-size:12px}p{line-height:1.6}"
-        "@media print{body{background:white;margin:0;font-size:12px}section{padding:8px}.scroll{overflow:visible}th,td{padding:5px;font-size:10px}}"
+        "@page{size:A4 landscape;margin:10mm}"
+        "@media print{body{background:white;margin:0;font-size:12px}section{padding:8px}.scroll{overflow:visible}th,td{padding:5px;font-size:10px}tr{break-inside:avoid}h2,h3{break-after:avoid}}"
         "</style><header><h1>דוח הוצאות חודשי</h1>"
         f"<p>12 חודשים שהסתיימו ב{escape(_hebrew_month_label(last_month))}. נתונים שנמשכו: {escape(info['date_from'])} עד {escape(info['date_to'])}.</p>"
         "<p>הסכום המודגש אינו כולל טיולים בחו״ל. הוצאות ללא קטגוריה מופיעות ב״לא מזוהה״ ונכללות בסכום; תנועות שטרם הוגדרו כהוצאה אינן כלולות.</p>"
         + coverage_note
         + "</header><section><h2>הוצאות לפי חודש וקטגוריה</h2>"
         + "".join(trend_sections)
-        + "<details><summary>איך לקרוא את הסכומים</summary><p>חיוב הכרטיס בעו״ש, העברות, תנועות השקעה וזיכויים לא מזוהים ממתינים לבירור ואינם נספרים כהוצאה. "
+        + "<details><summary>איך לקרוא את הסכומים</summary><p>העמודה האחרונה מציגה מספר תנועות לבירור, לא סכום כספי. "
+        "תנועות שאושרו כהעברה פנימית, מתנה או הכנסה אינן דורשות בירור חוזר. "
+        "חיוב הכרטיס בעו״ש, העברות, תנועות השקעה וזיכויים לא מזוהים ממתינים לבירור ואינם נספרים כהוצאה. "
         "חיובים ממתינים וסכומים חסרים אינם כלולים. סימון אישי כהוצאה גובר על סיווג זה; זיכוי שסומן כהוצאה מפחית את הסכום. "
         "הסכומים בטבלה מעוגלים לתצוגה בלבד; הסכום המדויק מופיע בהצבעה על מספר. "
         "מטבע זר מומר לפי השער היציג האחרון שפרסם בנק ישראל עד סוף חודש העסקה. "
@@ -1498,5 +1687,6 @@ def write_simple_report(
     output: Path,
     rules: Sequence[LiveTagRule] = (),
     rates: dict[tuple[str, str], Decimal] | None = None,
+    label_rules: Sequence[LiveLabelRule] = (),
 ) -> None:
-    _write_atomic_html(simple_report_html(snapshot, rules, rates), output)
+    _write_atomic_html(simple_report_html(snapshot, rules, rates, label_rules), output)

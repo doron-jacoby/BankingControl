@@ -20,14 +20,19 @@ from finance.financy import (
 )
 from finance.live import (
     TAGS,
+    LiveLabelRule,
     LiveTagRule,
+    PDFExportError,
     general_category_trend,
+    load_label_rules,
     load_snapshot,
     load_tag_rules,
+    save_label_rule,
     save_tag_rule,
     summarize,
     sync_snapshot,
     write_report,
+    write_report_pdf,
     write_simple_report,
 )
 from finance.models import Category, ClassificationRule, utc_now
@@ -37,6 +42,8 @@ from finance.service import FinanceService
 from finance.storage import DEFAULT_DATABASE_PATH, StorageError, open_database
 from finance.sync import SyncService
 from finance.worker import WorkerSettings, run_demo_worker, worker_status
+
+DEFAULT_REPORT_DIR = Path.home() / "Documents" / "PersonalFinance"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -57,7 +64,11 @@ def parser() -> argparse.ArgumentParser:
     monthly.add_argument("month", help="YYYY-MM")
     monthly.add_argument("--timezone", default="Asia/Jerusalem")
     report = commands.add_parser("report", help="Write a local provisional live report")
-    report.add_argument("--output", type=Path)
+    report.add_argument(
+        "--output",
+        type=Path,
+        help="HTML or PDF path (both are saved); default: ~/Documents/PersonalFinance",
+    )
     report.add_argument(
         "--detailed",
         action="store_true",
@@ -85,6 +96,23 @@ def parser() -> argparse.ArgumentParser:
     )
     tag.add_argument("--priority", type=int, default=0)
     commands.add_parser("tags", help="List saved live reconciliation rules")
+    label = commands.add_parser(
+        "label", help="Save a display name for records Financy gives no merchant"
+    )
+    label.add_argument("label_value", help="Display name shown in reports")
+    label.add_argument(
+        "--account-id", help="Scopes the rule; required alongside --record-id"
+    )
+    label.add_argument(
+        "--record-id", help="Match one specific record; needs --account-id"
+    )
+    label.add_argument("--category", help="Match Financy's category label")
+    label.add_argument("--subcategory", help="Match Financy's subcategory label")
+    label.add_argument(
+        "--amount", help="Match Financy's exact signed amount, e.g. -700"
+    )
+    label.add_argument("--priority", type=int, default=0)
+    commands.add_parser("labels", help="List saved live display-name rules")
     classify = commands.add_parser("classify")
     scope = classify.add_mutually_exclusive_group(required=True)
     scope.add_argument("--all", action="store_true")
@@ -258,12 +286,15 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
         "report",
         "tag",
         "tags",
+        "label",
+        "labels",
     }:
         emit(
             {
                 "status": "contract_incomplete",
-                "message": "Use sync, monthly, report, tag or tags for provisional live "
-                "analysis. Reconciled expense totals and the live worker remain unavailable.",
+                "message": "Use sync, monthly, report, tag, tags, label or labels for "
+                "provisional live analysis. Reconciled expense totals and the live "
+                "worker remain unavailable.",
             }
         )
         return 2
@@ -271,7 +302,7 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
         store = MacOSKeychain()
         if command == "connect":
             emit(connect_interactively(store))
-        elif command in {"monthly", "report", "tag", "tags"}:
+        elif command in {"monthly", "report", "tag", "tags", "label", "labels"}:
             if not path.exists():
                 emit({"status": "not_imported", "message": "Run finance sync first."})
                 return 1
@@ -306,10 +337,42 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
             elif command == "tags":
                 with open_database(load_database_key(store), path) as db:
                     emit([asdict(rule) for rule in load_tag_rules(db)])
+            elif command == "label":
+                try:
+                    label_rule = LiveLabelRule(
+                        label=args.label_value,
+                        account_id=args.account_id,
+                        record_id=args.record_id,
+                        category=args.category,
+                        subcategory=args.subcategory,
+                        amount=args.amount,
+                        priority=args.priority,
+                    )
+                    with open_database(load_database_key(store), path) as db:
+                        save_label_rule(db, label_rule)
+                except ValueError as error:
+                    emit(
+                        {
+                            "status": "failed",
+                            "error": "validation",
+                            "message": str(error),
+                        }
+                    )
+                    return 2
+                emit(
+                    {
+                        "status": "saved",
+                        "message": "Run finance report to apply it.",
+                    }
+                )
+            elif command == "labels":
+                with open_database(load_database_key(store), path) as db:
+                    emit([asdict(rule) for rule in load_label_rules(db)])
             else:
                 snapshot = load_snapshot(path, store)
                 with open_database(load_database_key(store), path) as db:
                     rules = load_tag_rules(db)
+                    labels = load_label_rules(db)
                 if command == "monthly":
                     if args.timezone != "Asia/Jerusalem":
                         emit(
@@ -319,34 +382,36 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                         )
                         return 2
                     emit(summarize(snapshot, args.month, rules))
-                elif not args.detailed:
-                    output = args.output or path.parent / "monthly-overview.html"
-                    months = set(general_category_trend(snapshot, rules)["months"])
-                    pairs = {
-                        (r["currency"], r["day"][:7])
-                        for r in snapshot["records"]
-                        if r["currency"] != "ILS"
-                        and r["amount"] is not None
-                        and r["day"][:7] in months
-                    }
-                    with open_database(load_database_key(store), path) as db:
-                        rates = ensure_month_end_rates(db, pairs)
-                    write_simple_report(snapshot, output, rules, rates)
-                    emit(
-                        {
-                            "status": "completed",
-                            "analysis": "provisional",
-                            "report": str(output),
-                        }
-                    )
                 else:
-                    output = args.output or path.parent / "analysis.html"
-                    write_report(snapshot, output, rules)
+                    output = args.output or DEFAULT_REPORT_DIR / (
+                        "analysis.html" if args.detailed else "monthly-overview.html"
+                    )
+                    output = output.expanduser()
+                    if output.suffix.lower() not in {".html", ".pdf"}:
+                        raise ValueError("Report output must end in .html or .pdf")
+                    output = output.with_suffix(".html")
+                    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    if not args.detailed:
+                        months = set(general_category_trend(snapshot, rules)["months"])
+                        pairs = {
+                            (r["currency"], r["day"][:7])
+                            for r in snapshot["records"]
+                            if r["currency"] != "ILS"
+                            and r["amount"] is not None
+                            and r["day"][:7] in months
+                        }
+                        with open_database(load_database_key(store), path) as db:
+                            rates = ensure_month_end_rates(db, pairs)
+                        write_simple_report(snapshot, output, rules, rates, labels)
+                    else:
+                        write_report(snapshot, output, rules)
+                    pdf = write_report_pdf(output)
                     emit(
                         {
                             "status": "completed",
                             "analysis": "provisional",
                             "report": str(output),
+                            "pdf": str(pdf),
                         }
                     )
         else:
@@ -387,6 +452,9 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                 "message": "Run finance connect locally. Check Financy Settings -> API, plan and bank connection.",
             }
         )
+        return 1
+    except PDFExportError as error:
+        emit({"status": "failed", "error": "pdf_export", "message": str(error)})
         return 1
     except ExchangeRateError as error:
         emit({"status": "failed", "error": "exchange_rate", "message": str(error)})

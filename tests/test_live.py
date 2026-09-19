@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from copy import deepcopy
@@ -17,7 +18,9 @@ from finance.cli import main
 from finance.exchange import ExchangeRateError
 from finance.financy import FinancyClient, FinancyError
 from finance.live import (
+    LiveLabelRule,
     LiveTagRule,
+    PDFExportError,
     _display_money,
     _general_category,
     _is_fee,
@@ -26,16 +29,20 @@ from finance.live import (
     _latest_reviewable_month,
     expense_subjects,
     general_category_trend,
+    load_label_rules,
     load_snapshot,
     load_tag_rules,
     recurring_merchants,
     report_html,
+    resolve_label,
     resolve_tag,
+    save_label_rule,
     save_tag_rule,
     simple_report_html,
     summarize,
     sync_snapshot,
     write_report,
+    write_report_pdf,
     write_simple_report,
 )
 from finance.security import FakeSecretStore, SecretError, load_database_key
@@ -64,6 +71,13 @@ class LiveTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "finance.db"
+        self.enterContext(patch("finance.cli.DEFAULT_REPORT_DIR", self.path.parent))
+        self.enterContext(
+            patch(
+                "finance.cli.write_report_pdf",
+                side_effect=lambda html: html.with_suffix(".pdf"),
+            )
+        )
         self.store = FakeSecretStore()
         account = FinancyClient(
             CREDS, FakeTransport([token(), account_page()])
@@ -96,6 +110,31 @@ class LiveTests(unittest.TestCase):
         )
         with self.assertRaises(FinancyError):
             FinancyClient(CREDS, transport).transaction_rows(END, START)
+
+    def test_report_destination_defaults_to_documents_and_accepts_pdf_output(
+        self,
+    ) -> None:
+        self.sync()
+        destination = self.path.parent / "Documents" / "PersonalFinance"
+        with (
+            patch("finance.cli.DEFAULT_REPORT_DIR", destination),
+            patch("finance.cli.MacOSKeychain", return_value=self.store),
+            patch(
+                "finance.cli.write_report_pdf",
+                return_value=destination / "monthly-overview.pdf",
+            ) as export,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            base = ["--data-dir", str(self.path.parent), "report"]
+            self.assertEqual(main(base), 0)
+            export.assert_called_once_with(destination / "monthly-overview.html")
+            self.assertTrue((destination / "monthly-overview.html").is_file())
+            custom = self.path.parent / "custom report.pdf"
+            self.assertEqual(main(base + ["--output", str(custom)]), 0)
+            export.assert_called_with(custom.with_suffix(".html"))
+            self.assertTrue(custom.with_suffix(".html").is_file())
+            export.side_effect = PDFExportError("Chrome failed")
+            self.assertEqual(main(base), 1)
 
     def test_default_sync_fetches_twelve_full_months_and_report_is_hebrew(self) -> None:
         output = io.StringIO()
@@ -541,6 +580,148 @@ class LiveTagTests(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+class LiveLabelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "finance.db"
+        self.enterContext(patch("finance.cli.DEFAULT_REPORT_DIR", self.path.parent))
+        self.enterContext(
+            patch(
+                "finance.cli.write_report_pdf",
+                side_effect=lambda html: html.with_suffix(".pdf"),
+            )
+        )
+        self.store = FakeSecretStore()
+        account = FinancyClient(
+            CREDS, FakeTransport([token(), account_page()])
+        ).list_accounts()[0]
+        self.account_id = account.provider_account_id
+        client = Mock(spec=FinancyClient)
+        client.list_accounts.return_value = [account]
+        client.transaction_rows.return_value = [
+            row(
+                "hoa",
+                amount={
+                    "chargedAmount": {"amount": Decimal("-700"), "currency": "ILS"}
+                },
+                category={"main": "INCOMES_EXPENSES", "sub": "DIRECT_DEBIT"},
+            ),
+            row(
+                "other-debit",
+                amount={
+                    "chargedAmount": {"amount": Decimal("-500"), "currency": "ILS"}
+                },
+                category={"main": "INCOMES_EXPENSES", "sub": "DIRECT_DEBIT"},
+            ),
+        ]
+        sync_snapshot(client, self.path, self.store, START, END)
+        self.snapshot = load_snapshot(self.path, self.store)
+
+    def save(self, **kwargs: Any) -> None:
+        with open_database(load_database_key(self.store), self.path) as db:
+            save_label_rule(db, LiveLabelRule(**kwargs))
+
+    def rules(self) -> list[LiveLabelRule]:
+        with open_database(load_database_key(self.store), self.path) as db:
+            return load_label_rules(db)
+
+    def test_rejects_underspecified_or_invalid_rules(self) -> None:
+        with open_database(load_database_key(self.store), self.path) as db:
+            with self.assertRaises(ValueError):
+                save_label_rule(db, LiveLabelRule(label=""))
+            with self.assertRaises(ValueError):
+                save_label_rule(db, LiveLabelRule(label="ועד בית"))
+            with self.assertRaises(ValueError):
+                save_label_rule(db, LiveLabelRule(label="ועד בית", record_id="hoa"))
+            with self.assertRaises(ValueError):
+                save_label_rule(
+                    db, LiveLabelRule(label="ועד בית", category="lowercase")
+                )
+            with self.assertRaises(ValueError):
+                save_label_rule(db, LiveLabelRule(label="ועד בית", account_id="  "))
+            with self.assertRaises(ValueError):
+                save_label_rule(db, LiveLabelRule(label="x" * 201, category="TRANSFER"))
+            with self.assertRaises(ValueError):
+                save_label_rule(
+                    db, LiveLabelRule(label="ועד בית", amount="not-a-number")
+                )
+
+    def test_label_rule_matches_only_the_specified_amount(self) -> None:
+        self.save(
+            label="ועד בית",
+            account_id=self.account_id,
+            category="INCOMES_EXPENSES",
+            subcategory="DIRECT_DEBIT",
+            amount="-700",
+        )
+        hoa = next(r for r in self.snapshot["records"] if r["id"] == "hoa")
+        other = next(r for r in self.snapshot["records"] if r["id"] == "other-debit")
+        self.assertEqual(resolve_label(hoa, self.rules()), "ועד בית")
+        self.assertIsNone(resolve_label(other, self.rules()))
+
+    def test_expense_subjects_uses_label_rule_when_merchant_is_missing(self) -> None:
+        self.save(
+            label="ועד בית",
+            account_id=self.account_id,
+            category="INCOMES_EXPENSES",
+            subcategory="DIRECT_DEBIT",
+            amount="-700",
+        )
+        subjects = expense_subjects(
+            self.snapshot["records"], [], lambda r: True, self.rules()
+        )
+        by_subject = {item["subject"]: item for item in subjects}
+        self.assertIn("ועד בית", by_subject)
+        self.assertEqual(by_subject["ועד בית"]["total"], Decimal(700))
+        self.assertIn("ללא שם · INCOMES_EXPENSES / DIRECT_DEBIT", by_subject)
+
+    def test_cli_label_and_labels_commands_apply_to_report(self) -> None:
+        base = ["--data-dir", str(self.path.parent)]
+
+        def run(args: list[str]) -> tuple[int, Any]:
+            output = io.StringIO()
+            with (
+                patch("finance.cli.MacOSKeychain", return_value=self.store),
+                contextlib.redirect_stdout(output),
+            ):
+                code = main(args)
+            return code, json.loads(output.getvalue())
+
+        code, saved = run(
+            base
+            + [
+                "label",
+                "ועד בית",
+                "--account-id",
+                self.account_id,
+                "--category",
+                "INCOMES_EXPENSES",
+                "--subcategory",
+                "DIRECT_DEBIT",
+                "--amount",
+                "-700",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(saved["status"], "saved")
+
+        code, listed = run(base + ["labels"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["label"], "ועד בית")
+
+        code, invalid = run(base + ["label", "x", "--record-id", "hoa"])
+        self.assertEqual(code, 2)
+        self.assertEqual(invalid["error"], "validation")
+
+        code, report = run(base + ["report"])
+        self.assertEqual(code, 0)
+        html = Path(report["report"]).read_text()
+        self.assertIn("ועד בית", html)
+        self.assertIn("ללא שם · INCOMES_EXPENSES / DIRECT_DEBIT", html)
+
+
 class LiveFlaggingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -630,6 +811,13 @@ class LiveTrendTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "finance.db"
+        self.enterContext(patch("finance.cli.DEFAULT_REPORT_DIR", self.path.parent))
+        self.enterContext(
+            patch(
+                "finance.cli.write_report_pdf",
+                side_effect=lambda html: html.with_suffix(".pdf"),
+            )
+        )
         self.store = FakeSecretStore()
         account = FinancyClient(
             CREDS, FakeTransport([token(), account_page()])
@@ -732,6 +920,53 @@ class LiveTrendTests(unittest.TestCase):
 
 
 class ReportRegressionTests(unittest.TestCase):
+    def test_pdf_export_is_private_and_preserves_previous_pdf_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            html = Path(directory) / "report with spaces.html"
+            html.write_text("<html lang='he'>דוח</html>")
+            output = html.with_suffix(".pdf")
+
+            def render(command: list[str], **kwargs: Any) -> None:
+                self.assertIn(html.resolve().as_uri(), command)
+                target = next(
+                    arg.removeprefix("--print-to-pdf=")
+                    for arg in command
+                    if arg.startswith("--print-to-pdf=")
+                )
+                Path(target).write_bytes(b"%PDF-1.7\nsynthetic\n%%EOF\n")
+
+            with (
+                patch("finance.live.Path.is_file", return_value=True),
+                patch("finance.live.subprocess.run", side_effect=render),
+            ):
+                self.assertEqual(write_report_pdf(html), output)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            before = output.read_bytes()
+
+            def render_without_exiting(command: list[str], **kwargs: Any) -> None:
+                render(command, **kwargs)
+                raise subprocess.TimeoutExpired(command, 15)
+
+            with (
+                patch("finance.live.Path.is_file", return_value=True),
+                patch(
+                    "finance.live.subprocess.run", side_effect=render_without_exiting
+                ),
+            ):
+                self.assertEqual(write_report_pdf(html), output)
+            self.assertEqual(output.read_bytes(), before)
+            with (
+                patch("finance.live.Path.is_file", return_value=True),
+                patch(
+                    "finance.live.subprocess.run",
+                    side_effect=OSError("Private browser details"),
+                ),
+                self.assertRaisesRegex(PDFExportError, "previous PDF was preserved"),
+            ):
+                write_report_pdf(html)
+            self.assertEqual(output.read_bytes(), before)
+            self.assertEqual(list(Path(directory).glob(".finance-pdf-*")), [])
+
     def record(self, identity: str = "one", **updates: Any) -> dict[str, Any]:
         return (
             dict(
@@ -819,6 +1054,45 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertEqual(
             summarize(snapshot, "2026-08")["reconciled"]["ILS"]["spend"], Decimal(100)
         )
+
+    def test_confirmed_movements_leave_review_without_adding_spending(self) -> None:
+        snapshot = self.snapshot(
+            [
+                self.record("purchase"),
+                self.record("settlement", subcategory="CREDIT_CARD_CHECKING"),
+                self.record("esop", amount="500", category="TRANSFER"),
+                self.record("sale", amount="200", category="TRADING"),
+            ]
+        )
+        rules = [
+            LiveTagRule(tag=tag, account_id="account-1", record_id=identity)
+            for identity, tag in (
+                ("settlement", "self_transfer"),
+                ("esop", "income"),
+                ("sale", "self_transfer"),
+            )
+        ]
+        before = summarize(snapshot, "2026-08")
+        after = summarize(snapshot, "2026-08", rules)
+        self.assertEqual(after["flagged_for_review"], [])
+        self.assertEqual(
+            after["reconciled"]["ILS"]["spend"], before["reconciled"]["ILS"]["spend"]
+        )
+        self.assertEqual(after["reconciled"]["ILS"]["income"], Decimal(500))
+        row = (
+            simple_report_html(snapshot, rules)
+            .split("<td>אוגוסט 2026</td>")[1]
+            .split("</tr>")[0]
+        )
+        self.assertTrue(row.endswith("<td>0</td>"))
+        # Missing source status must remain unresolved even after identification.
+        snapshot["records"][3]["status"] = "UNKNOWN"
+        row = (
+            simple_report_html(snapshot, rules)
+            .split("<td>אוגוסט 2026</td>")[1]
+            .split("</tr>")[0]
+        )
+        self.assertTrue(row.endswith("<td>1</td>"))
 
     def test_insurance_increase_unknown_and_missing_amount_are_reviewed(self) -> None:
         snapshot = self.snapshot(
