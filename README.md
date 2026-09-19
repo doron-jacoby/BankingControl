@@ -57,7 +57,9 @@ arithmetic before display rounding. Diagnostics retain original currencies.
 Categories are food, shopping, domestic transport, education, health/insurance,
 leisure, bank fees, overseas travel, Other and Unidentified. Bank fees include
 Financy fee labels and untagged foreign-exchange debits under 100 in the charged
-currency (larger conversions are excluded as investment movements). Card fees without an amount
+currency (larger conversions are excluded as investment movements). Card fees
+("דמי כרטיס") are bank fees, and their waiver credits ("פטור והנחה מדמי כרטיס")
+reduce bank fees instead of waiting for review. Card fees without an amount
 and investment-account movements are not listed for review. HaKfar HaYarok charges are
 Education, including the user-confirmed school name found in bank descriptions;
 only its canonical name is retained. תחנת החוף המנהרה charges are domestic

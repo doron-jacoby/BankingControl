@@ -542,6 +542,11 @@ def _school_merchant(value: str) -> bool:
     )
 
 
+def _card_fee_merchant(value: str) -> bool:
+    # Card fees ("דמי כרטיס") and their waivers ("פטור והנחה מדמי כרטיס").
+    return "דמי כרטיס" in value
+
+
 def _car_wash_merchant(value: str) -> bool:
     # Financy files this under FOOD_&_DRINKS/RESTAURANT; it is actually a car wash.
     normalized = " ".join(re.findall(r"[\w]+", value.upper()))
@@ -822,6 +827,9 @@ def _reconcile_reason(
         return "expense_tagged", True
     if record["category"] == "TRANSFER":
         return "unresolved_transfer", False
+    if amount > 0 and _card_fee_merchant(record.get("merchant") or ""):
+        # A card fee waiver refunds a fee; it reduces bank fees.
+        return "card_fee_waiver", True
     if amount >= 0:
         return "unresolved_credit", False
     if record["subcategory"] == "CREDIT_CARD_CHECKING":
@@ -992,7 +1000,7 @@ def _general_category(
 ) -> str:
     if subcategory == "CREDIT_CARD_CHECKING":
         return CARD_EXPENSE_CATEGORY_LABEL
-    if subcategory == "FOREIGN_EXCHANGE":
+    if subcategory == "FOREIGN_EXCHANGE" or _card_fee_merchant(merchant):
         return BANK_FEES_CATEGORY_LABEL
     if _school_merchant(merchant):
         return "חינוך"

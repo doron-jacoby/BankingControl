@@ -22,6 +22,7 @@ from finance.live import (
     LiveTagRule,
     PDFExportError,
     _display_money,
+    _flag_debits,
     _general_category,
     _is_card_installment,
     _is_fee,
@@ -1811,6 +1812,27 @@ class ReportRegressionTests(unittest.TestCase):
         self.assertNotIn(
             "עלייה לעומת חיובים", simple_report_html(snapshot, rates=rates)
         )
+
+    def test_card_fee_waiver_reduces_bank_fees_without_review(self) -> None:
+        fee = self.record(
+            "fee",
+            account_type="credit_card",
+            merchant="דמי כרטיס",
+            amount="-17.90",
+            category="FINANCE",
+            subcategory="FINANCE_OTHER",
+        )
+        waiver = fee | {"id": "waiver", "merchant": "פטור והנחה מדמי כרטיס"}
+        waiver["amount"] = "17.90"
+        other_credit = fee | {"id": "credit", "merchant": "Shop", "amount": "20"}
+        snapshot = self.snapshot([fee, waiver, other_credit])
+        august = general_category_trend(snapshot)["currencies"]["ILS"]["2026-08"]
+        self.assertEqual(august["categories"]["עמלות בנק"], Decimal(0))
+        flagged = {
+            item["id"]: item["reasons"]
+            for item in _flag_debits(snapshot["records"], [])
+        }
+        self.assertEqual(flagged, {"credit": ["unresolved_credit"]})
 
     def test_fee_insurance_and_standing_order_predicates(self) -> None:
         self.assertTrue(
