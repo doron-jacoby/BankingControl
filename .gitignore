@@ -1,0 +1,12 @@
+.context/
+.venv/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.env*
+*.db*
+*.sqlite*
+.DS_Store

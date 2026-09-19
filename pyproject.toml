@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-finance-monitor"
+version = "0.1.0"
+description = "Local-first, read-only personal finance monitoring"
+requires-python = ">=3.12"
+dependencies = ["sqlcipher3>=0.6.2,<0.7", "keyring>=25,<26"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.12,<1", "mypy>=1.15,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+finance = ["schema.sql"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["sqlcipher3", "sqlcipher3.*"]
+ignore_missing_imports = true
