@@ -10,18 +10,24 @@ cd /Users/doron/source/BankingControl
 ./install.sh
 ```
 
-The Hebrew wizard checks macOS/Python, asks before installing an isolated
+The English wizard checks macOS/Python, asks before installing an isolated
 runtime, creates a Keychain key and encrypted demo database, asks before the
 first import, and runs **the same worker once in the foreground** to check
 permissions and show a local monthly summary. It can then install and verify a
 persistent demo LaunchAgent. The installed runtime is independent of this
 checkout, under `~/Library/Application Support/PersonalFinance/runtime`.
 
-**This is a working demonstration, not a live bank connection.** All displayed
-financial data is synthetic. Selecting real-bank onboarding shows the missing
-official provider/consent/Conductor contracts one step at a time. No guessed
-signup URLs or Bank Leumi permission instructions are presented. No real
-provider adapter, authentication flow, or Conductor SDK is implemented yet.
+The full import/report/worker flow uses synthetic data. The second setup option
+now supports **live Financy authentication and account discovery** against the
+published API 1.0.0 contract. It guides you through signing in, linking your bank
+in Financy, finding Settings -> API, and entering credentials locally with hidden
+input. Credentials are verified before being stored as one macOS Keychain item.
+
+Live transaction import remains disabled: the published transaction schema does
+not enumerate status values or define pending-to-final links. Those semantics
+must be confirmed before real transactions can safely enter expense totals.
+Production Netflix Conductor integration also still needs its version/SDK.
+See [the verified Financy contract and remaining gaps](docs/FINANCY_CONTRACT.md).
 
 `./install.sh --check` checks prerequisites without installing anything.
 `./install.sh --demo` skips the mode choice but still asks before changes/import.
@@ -33,6 +39,9 @@ After installation:
 
 ```sh
 finance="$HOME/Library/Application Support/PersonalFinance/runtime/bin/finance"
+"$finance" connect             # Live Financy credential setup, local hidden input
+"$finance" accounts            # Read actual Financy accounts, local output only
+"$finance" status              # Verify API access and connection readiness
 "$finance" --demo status
 "$finance" --demo sync
 "$finance" --demo accounts
@@ -127,10 +136,10 @@ The LaunchAgent follows Apple's [RunAtLoad/KeepAlive model](https://developer.ap
 | Phase | State | Verification |
 | --- | --- | --- |
 | 1 — foundation | Complete: package, models, SQLCipher schema, Keychain adapter, fake provider | 15 tests; Ruff formatting/lint and strict mypy passed |
-| 2 — provider | Synthetic normalization and fake discovery/import implemented; real integration blocked | 20 tests at normalization checkpoint; first import covered in Phase 3 |
+| 2 — provider | Live authentication/account discovery added; real transaction normalization still blocked on status/reconciliation semantics | 67 tests after Financy discovery addition; no real credentials used in tests |
 | 3 — synchronization | Atomic imports, overlap, aliases/deduplication, checkpoints, locks and CLI | 29 tests at phase checkpoint |
 | 4 — finance logic | Manual/automatic classification, backfill and auditable multi-currency monthly totals | 38 tests at phase checkpoint |
-| 5 — automation | Fake adapter, receipts/retries, Hebrew installer, foreground worker check and launchd setup | 57 tests, including fake end-to-end installation; real server deployment blocked |
+| 5 — automation | Fake adapter, receipts/retries, English installer, foreground worker check and launchd setup | 57 tests at phase checkpoint; real server deployment blocked |
 | 6 — local AI | Deferred until the real core is stable | Outside v1 |
 
 Financy endpoints, consent flows, banking permission screens, Conductor SDK

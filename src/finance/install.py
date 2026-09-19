@@ -1,4 +1,4 @@
-"""Interactive macOS setup. Demo works now; real consent awaits verified contracts."""
+"""English guided setup: full demo or verified Financy account discovery."""
 
 import argparse
 import json
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from finance.analytics import AnalyticsService
 from finance.demo import demo_provider
+from finance.financy import FinancyError, connect_interactively
 from finance.models import utc_now
 from finance.security import (
     SERVICE,
@@ -32,7 +33,7 @@ DEMO_KEY = "database-key-demo-v1"
 
 
 def confirm(prompt: str, ask: Callable[[str], str] = input) -> bool:
-    return ask(prompt + " [y/N] ").strip().casefold() in {"y", "yes", "כן"}
+    return ask(prompt + " [y/N] ").strip().casefold() in {"y", "yes"}
 
 
 def launchd_definition(python: Path, directory: Path) -> dict[str, object]:
@@ -104,9 +105,10 @@ def setup_demo(
     ask: Callable[[str], str] = input,
     launch_agent: Path | None = None,
 ) -> int:
-    print("\nמצב הדגמה בלבד: אין חיבור לבנק או לשרת Conductor. כל הנתונים מומצאים.")
+    print("\nDemo mode: no bank or Conductor server connection. All data is synthetic.")
     if not confirm(
-        "שלב 1/5 — ליצור מסד מוצפן ומפתח ב־Keychain? macOS עשוי לבקש אישור.", ask
+        "Step 1/5 - Create an encrypted database and Keychain key? macOS may ask for permission.",
+        ask,
     ):
         return 1
     path = directory / "demo" / "finance.db"
@@ -122,34 +124,36 @@ def setup_demo(
         )
         with open_database(key, path, create=True):
             pass
-    print("ההצפנה והמפתח אומתו. המפתח לא יוצג ולא יישמר בקובץ.")
+    print("Encryption and key verified. The key is never displayed or saved to a file.")
     provider = demo_provider()
     print(
-        f"שלב 2/5 — בדיקת הספק המדומה הצליחה: {len(provider.list_accounts())} חשבונות הדגמה."
+        f"Step 2/5 - Fake provider verified: {len(provider.list_accounts())} demo accounts."
     )
     background = confirm(
-        "שלב 3/5 — להתקין worker הדגמה קבוע שיריץ סנכרון מדומה פעם בשבוע?", ask
+        "Step 3/5 - Install a persistent demo worker for weekly synthetic syncs?", ask
     )
     if background:
         print(
-            "ה־worker יפעל כשאתה מחובר למק. הוא לא מעיר מק ישן. הנתונים נשארים מקומיים."
+            "The worker runs while you are logged in. It cannot wake a sleeping Mac. Data stays local."
         )
     if not confirm(
-        "שלב 4/5 — להריץ כעת פעם אחת את אותו worker, לייבא נתוני הדגמה ולהציג סיכום?",
+        "Step 4/5 - Run the same worker once now, import demo data and display a summary?",
         ask,
     ):
-        print("ההתקנה נעצרה לפני הייבוא. אפשר להריץ שוב את אשף ההתקנה.")
+        print("Setup stopped before importing. Run the wizard again to continue.")
         return 1
     service = FinanceService(SyncService(provider, path, key))
     output = run_demo_worker(service, once=True)
     print(json.dumps(output, ensure_ascii=False, indent=2))
     if output.get("status") != "completed":
-        print("הרצת הבדיקה לא הושלמה. בדוק את Keychain ואת הרשאות התיקייה והריץ שוב.")
+        print(
+            "The test run did not complete. Check Keychain and directory permissions, then retry."
+        )
         return 1
     with open_database(key, path) as db:
         now = utc_now()
         summary = AnalyticsService(db).get_real_monthly_expenses(now.year, now.month)
-    print("סיכום מקומי של נתוני הדגמה — לא נתוני הבנק שלך:")
+    print("Local summary of synthetic demo data - not your bank data:")
     print(json.dumps(asdict(summary), default=str, ensure_ascii=False, indent=2))
     if background:
         destination = (
@@ -157,33 +161,37 @@ def setup_demo(
         )
         write_launch_agent(directory, destination)
         start_launch_agent(destination, directory)
-        print("שלב 5/5 — ה־worker הקבוע הופעל ואומתה פעולת polling מדומה.")
+        print("Step 5/5 - Background worker started and fake polling verified.")
     else:
-        print("שלב 5/5 — ההדגמה הושלמה. לא הופעל שירות רקע.")
+        print("Step 5/5 - Demo complete. No background service was started.")
     print(
-        "לחיבור אמיתי דרושים עדיין חוזה Financy, הוראות הסכמה רשמיות וגרסת Netflix Conductor."
+        "Live account discovery is available in Financy setup. Live transaction import and Conductor automation are not enabled yet."
     )
     return 0
 
 
 def live_requirements(ask: Callable[[str], str] = input) -> None:
-    print("\nהחיבור האמיתי עדיין אינו ממומש. לפני פתיחת חשבון ואישור בבנק צריך להשלים:")
+    print(
+        "\nFinancy setup: verified authentication and account discovery are available."
+    )
     steps = [
-        "1. לקבל מהספק את השם המדויק, גרסת API/SDK וקישור רשמי להרשמה ולתיעוד Financy/Open Finance. "
-        "אין כרגע כתובת הרשמה מאומתת בפרויקט.",
-        "2. לקבל את תהליך ההסכמה הרשמי לחשבון שלך בבנק לאומי: היכן מאשרים, אילו הרשאות קריאה "
-        "מבקשים, תוקף ההסכמה ואיך מבטלים אותה. לא מוסרים לאפליקציה סיסמת בנק.",
-        "3. לקבל מספק הנתונים את חוזה החשבונות והעסקאות: מטבעות, סימן סכום, היסטוריה, "
-        "pagination, מזהי עסקאות וקישור בין עסקה ממתינה לסופית.",
-        "4. לקבל ממנהל Netflix Conductor את הגרסה, ה־SDK המותר, כתובת השרת ושיטת הזדהות "
-        "ל־worker. הפרויקט לא יפרוס דבר לשרת המשותף ללא תהליך הפריסה המקובל.",
+        "1. Open https://financy.open-finance.ai and sign in to your existing account. "
+        "Data API access requires an eligible paid plan; check your plan in Financy.",
+        "2. In Financy, add Bank Leumi (or your bank/card) and follow the bank's hosted "
+        "consent screens. Complete the permissions there and return to Financy. "
+        "Do not enter your bank password into this installer.",
+        "3. Open Settings -> API in Financy. Have clientId, clientSecret and userId ready. "
+        "The next step reads them with hidden input and stores them in macOS Keychain.",
+        "4. This setup verifies credentials and discovers accounts only. Live transaction import "
+        "is not enabled: documented status values and pending/final links still need confirmation. "
+        "Production Netflix Conductor integration also awaits its deployed version and SDK.",
     ]
     for step in steps:
         print(step)
-        ask("Enter להצגת הצעד הבא (אין להקליד סיסמה או token): ")
-    print(
-        "לא בוצעה הרשמה, בקשת הרשאה או פנייה לבנק. לאחר אימות החוזים נוכל לחבר את השלבים לאשף."
-    )
+        ask(
+            "Press Enter when ready for the next step (do not type a password or token here): "
+        )
+    print("Official guide: https://docs-financy.open-finance.ai/docs/authentication")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -196,28 +204,42 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         if not args.demo:
-            mode = input("מצב התקנה: 1 — הדגמה מלאה; 2 — צעדי חיבור לבנק [1]: ").strip()
+            mode = input(
+                "Setup mode: 1 - Full demo; 2 - Connect Financy accounts [1]: "
+            ).strip()
             if mode == "2":
                 live_requirements()
-                if not confirm("להמשיך בינתיים להתקנת ההדגמה?"):
-                    return 2
+                if not confirm(
+                    "Verify Financy credentials and save them in macOS Keychain?"
+                ):
+                    return 1
+                print(json.dumps(connect_interactively(MacOSKeychain()), indent=2))
+                print(
+                    "Account discovery setup complete. Run finance accounts to view accounts locally."
+                )
+                return 0
             elif mode not in {"", "1"}:
                 return 1
         directory = args.data_dir.expanduser().absolute()
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         with sync_lock(directory / "install.lock") as acquired:
             if not acquired:
-                print("אשף התקנה אחר כבר פועל. נסה שוב לאחר סיומו.")
+                print("Another installer is running. Retry after it finishes.")
                 return 1
             return setup_demo(directory, MacOSKeychain())
+    except FinancyError as error:
+        print(
+            f"Financy verification failed: {error.code}. Check Settings -> API and your plan or connection."
+        )
+        return 1
     except (SecretError, StorageError, OSError, ValueError, RuntimeError):
         print(
-            "ההתקנה לא הושלמה. בדוק גישה ל־Keychain, הרשאות התיקייה ומצב launchd. "
-            "לא הוחלף מפתח קיים; אפשר להריץ את האשף שוב."
+            "Setup did not complete. Check Keychain access, directory permissions and launchd. "
+            "No existing database key was replaced. You can rerun the wizard."
         )
         return 1
     except (EOFError, KeyboardInterrupt):
-        print("\nההתקנה בוטלה. אפשר להמשיך בהפעלה חוזרת של האשף.")
+        print("\nSetup cancelled. Rerun the wizard to continue.")
         return 130
 
 

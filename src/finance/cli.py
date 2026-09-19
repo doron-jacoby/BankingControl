@@ -10,6 +10,12 @@ from typing import Any
 from finance.analytics import AnalyticsService
 from finance.classification import FLAGS, MATCH_TYPES, backfill, save_rule
 from finance.demo import MonthlyDemoProvider
+from finance.financy import (
+    Credentials,
+    FinancyClient,
+    FinancyError,
+    connect_interactively,
+)
 from finance.models import Category, ClassificationRule, utc_now
 from finance.repository import accounts, transactions
 from finance.security import MacOSKeychain, SecretError, load_database_key
@@ -28,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("sync")
     commands.add_parser("status")
     commands.add_parser("accounts")
+    commands.add_parser("connect", help="Save and verify Financy credentials locally")
     tx = commands.add_parser("transactions")
     tx.add_argument("--days", type=int, default=30)
     monthly = commands.add_parser("monthly")
@@ -68,15 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     path, key_name = runtime_paths(args)
     if not args.demo:
-        emit(
-            {
-                "status": "not_configured",
-                "message": "Live Financy integration awaits its official contract/version. "
-                "Run ./install.sh for guided demo setup.",
-            }
-        )
-        return 2
+        return live_command(args.command)
     try:
+        if args.command == "connect":
+            emit({"error": "Use finance connect without --demo for Financy setup."})
+            return 2
         if args.command == "status" and not path.exists():
             emit(
                 {
@@ -188,6 +191,51 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
         return 1
+
+
+def live_command(command: str) -> int:
+    if command not in {"connect", "accounts", "status"}:
+        emit(
+            {
+                "status": "contract_incomplete",
+                "message": "Live account discovery is available. Transaction import and live worker "
+                "remain disabled pending verified status/reconciliation and Conductor contracts.",
+            }
+        )
+        return 2
+    try:
+        store = MacOSKeychain()
+        if command == "connect":
+            emit(connect_interactively(store))
+        else:
+            client = FinancyClient(Credentials.load(store))
+            if command == "accounts":
+                emit([asdict(account) for account in client.list_accounts()])
+            else:
+                emit(
+                    {
+                        "provider": "financy",
+                        "api_access": "verified",
+                        "live_import_enabled": False,
+                        **client.connection_summary(),
+                        "account_count": len(client.list_accounts()),
+                    }
+                )
+        return 0
+    except FinancyError as error:
+        emit(
+            {
+                "status": "failed",
+                "error": error.code,
+                "message": "Run finance connect locally. Check Financy Settings -> API, plan and bank connection.",
+            }
+        )
+        return 1
+    except (SecretError, OSError, ValueError):
+        emit({"status": "failed", "error": "local_configuration_or_storage"})
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        return 130
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 finance_root="${FINANCE_INSTALL_ROOT:-$HOME/Library/Application Support/PersonalFinance}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    echo "ההתקנה דורשת macOS."
+    echo "This installer requires macOS."
     exit 1
 fi
 
@@ -21,25 +21,25 @@ find_python() {
 }
 
 while ! find_python; do
-    echo "שלב הכנה: התקן Python 3.12 ומעלה מהאתר הרשמי: https://www.python.org/downloads/macos/"
+    echo "Install Python 3.12 or newer from https://www.python.org/downloads/macos/"
     if [[ "${1:-}" == "--check" ]]; then exit 1; fi
-    read -r -p "אחרי ההתקנה לחץ Enter לבדיקה חוזרת, או q ליציאה: " reply
+    read -r -p "After installing Python, press Enter to check again, or q to quit: " reply
     if [[ "$reply" == "q" ]]; then exit 1; fi
 done
 
 if [[ "${1:-}" == "--check" ]]; then
     "$finance_python" --version
-    echo "בדיקת macOS/Python הצליחה. לא בוצעה התקנה."
+    echo "macOS/Python checks passed. Nothing was installed."
     exit 0
 fi
 
-echo "האשף יתקין סביבה מבודדת ויפתח התקנה מודרכת בעברית."
-echo "הגרסה הנוכחית תומכת בהדגמה בלבד; חיבור לבנק ממתין לתיעוד הספק."
-read -r -p "להתקין את חבילות Python בתיקיית PersonalFinance המקומית? [y/N] " reply
-case "$reply" in y|Y|yes|כן) ;; *) exit 1 ;; esac
+echo "This wizard installs an isolated runtime and guides you through setup."
+echo "Choose a complete demo or connect Financy for live account discovery."
+read -r -p "Install Python packages in your local PersonalFinance directory? [y/N] " reply
+case "$reply" in y|Y|yes) ;; *) exit 1 ;; esac
 
 if [[ -L "$finance_root" || -L "$finance_root/runtime" ]]; then
-    echo "תיקיית ההתקנה אינה יכולה להיות קישור סימבולי."
+    echo "The installation directory must not be a symbolic link."
     exit 1
 fi
 mkdir -p "$finance_root"

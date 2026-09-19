@@ -4,6 +4,11 @@ The specification was copied unchanged from Downloads into the repository.
 Implementation proceeded phase by phase, extending the scope after the request
 to build everything possible and provide guided installation.
 
+Update: the installer is now entirely English. Verified Financy API 1.0.0
+authentication and account discovery have been added with Keychain-only
+credentials; live transaction import still awaits documented status and
+reconciliation semantics. The updated suite has **67 passing tests**.
+
 ## Phase checkpoints
 
 | Phase | Main files | Result at checkpoint |
@@ -63,14 +68,15 @@ when the user runs it.
 
 ## Remaining external contracts
 
-Live v1 is not yet complete. The functioning end-to-end path is synthetic:
+Live v1 is not yet complete. The functioning import-to-report path is synthetic;
+authentication and account discovery now use the verified real API contract:
 
-1. Financy/Open Finance: exact product, API/SDK version, official signup and
-   consent documentation, authentication/revocation/renewal, pagination, history
-   limits, account and transaction schemas, amount sign semantics, pending/final
-   reconciliation and settlement/statement coverage.
-2. Bank Leumi: the provider-approved consent flow, requested read-only scopes,
-   expiration and revocation. No permission screen or bank instruction is guessed.
+1. Financy/Open Finance: transaction status values, history limits, pending/final
+   reconciliation and settlement/statement coverage. The API version,
+   authentication, account discovery, pagination and amount sign are now
+   documented in `FINANCY_CONTRACT.md`.
+2. Bank Leumi: complete the bank's actual hosted consent screens through Financy.
+   No undocumented permission screen or bank instruction is guessed.
 3. Netflix Conductor: deployed version, compatible client, endpoint,
    authentication, organization worker/deployment conventions, supported
    scheduling mechanism and production timeout requirements. JSON files in

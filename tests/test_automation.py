@@ -250,7 +250,7 @@ class InstallerTests(unittest.TestCase):
         with contextlib.redirect_stdout(stream):
             live_requirements(ask)
         self.assertEqual(len(steps), 4)
-        self.assertIn("עדיין אינו ממומש", stream.getvalue())
+        self.assertIn("Live transaction import is not enabled", stream.getvalue())
 
     def test_rerunning_setup_preserves_existing_key_and_data(self) -> None:
         store = FakeSecretStore()
