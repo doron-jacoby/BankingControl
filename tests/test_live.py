@@ -30,6 +30,7 @@ from finance.live import (
     _is_insurance,
     _is_standing_order,
     _latest_reviewable_month,
+    card_settlement_matches,
     expense_subjects,
     general_category_trend,
     load_label_rules,
@@ -48,6 +49,7 @@ from finance.live import (
     write_report_pdf,
     write_simple_report,
 )
+from finance.models import Account
 from finance.security import FakeSecretStore, SecretError, load_database_key
 from finance.storage import open_database
 
@@ -777,6 +779,116 @@ class LiveTagTests(unittest.TestCase):
 
         code, _ = run(["--demo", "--data-dir", str(self.path.parent), "tags"])
         self.assertEqual(code, 2)
+
+
+class CardReconcileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "finance.db"
+        self.store = FakeSecretStore()
+        checking = FinancyClient(
+            CREDS, FakeTransport([token(), account_page()])
+        ).list_accounts()[0]
+        self.checking_id = checking.provider_account_id
+        card = Account(
+            provider="financy",
+            provider_account_id="card",
+            institution="max",
+            account_type="credit_card",
+            display_name="max credit_card",
+            currency="ILS",
+        )
+
+        def charge(identity: str, amount: str, **updates: object) -> dict[str, object]:
+            return row(
+                identity,
+                accountId="card",
+                amount={"chargedAmount": {"amount": amount, "currency": "ILS"}},
+                date={"transactionDate": "2026-07-15", "valueDate": "2026-08-10"},
+                **updates,
+            )
+
+        client = Mock(spec=FinancyClient)
+        client.list_accounts.return_value = [checking, card]
+        client.transaction_rows.return_value = [
+            row(
+                "settlement",
+                amount={"chargedAmount": {"amount": "-100", "currency": "ILS"}},
+                date={"transactionDate": "2026-08-10"},
+                category={"main": "FINANCE", "sub": "CREDIT_CARD_CHECKING"},
+            ),
+            row(
+                "other-settlement",
+                amount={"chargedAmount": {"amount": "-50", "currency": "ILS"}},
+                date={"transactionDate": "2026-08-02"},
+                category={"main": "FINANCE", "sub": "CREDIT_CARD_CHECKING"},
+            ),
+            charge("shop", "-60"),
+            charge("fee", "-57.90", merchantName="דמי כרטיס"),
+            charge("waiver", "17.90", merchantName="פטור והנחה מדמי כרטיס"),
+        ]
+        sync_snapshot(client, self.path, self.store, START, END)
+        self.snapshot = load_snapshot(self.path, self.store)
+
+    def cli(self, *args: str) -> dict[str, Any]:
+        output = io.StringIO()
+        with (
+            patch("finance.cli.MacOSKeychain", return_value=self.store),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(main(["--data-dir", str(self.path.parent), *args]), 0)
+        result: dict[str, Any] = json.loads(output.getvalue())
+        return result
+
+    def test_card_rows_keep_their_billing_day(self) -> None:
+        days = {r["id"]: r["charge_day"] for r in self.snapshot["records"]}
+        self.assertEqual(days["shop"], "2026-08-10")
+        self.assertEqual(days["settlement"], "")
+
+    def test_reconcile_previews_then_excludes_exact_settlements(self) -> None:
+        preview = self.cli("reconcile")
+        self.assertEqual(
+            (preview["status"], preview["matches"], preview["totals"]),
+            ("preview", 1, {"ILS": "100"}),
+        )
+        self.assertEqual(preview["settlements"][0]["card_charges"], 3)
+        with patch("finance.cli.write_report_pdf", side_effect=lambda h: h):
+            report = self.cli(
+                "report", "--output", str(self.path.parent / "report.html")
+            )
+        self.assertEqual(report["card_settlements_to_reconcile"], 1)
+        self.assertEqual(self.cli("reconcile", "--apply")["status"], "applied")
+        with open_database(load_database_key(self.store), self.path) as db:
+            rules = load_tag_rules(db)
+        record = next(r for r in self.snapshot["records"] if r["id"] == "settlement")
+        self.assertEqual(resolve_tag(record, rules), "self_transfer")
+        self.assertEqual(self.cli("reconcile")["matches"], 0)
+        trend = general_category_trend(self.snapshot, rules)["currencies"]["ILS"]
+        # Only the unmatched settlement stays; card charges count once, in July.
+        self.assertEqual(
+            trend["2026-08"]["categories"], {"אשראי ללא פירוט": Decimal(50)}
+        )
+        self.assertEqual(trend["2026-07"]["categories"]["עמלות בנק"], Decimal(40))
+        self.assertEqual(trend["2026-07"]["total"], Decimal(100))
+
+    def test_uncounted_ambiguous_or_tagged_groups_do_not_match(self) -> None:
+        records = self.snapshot["records"]
+        self.assertEqual(len(card_settlement_matches(records)), 1)
+        pending = [
+            r | {"status": "PENDING"} if r["id"] == "shop" else r for r in records
+        ]
+        self.assertEqual(card_settlement_matches(pending), [])
+        second_card = [
+            r | {"account_id": "card-2", "id": r["id"] + "-2"}
+            for r in records
+            if r["account_type"] == "credit_card"
+        ]
+        self.assertEqual(card_settlement_matches(records + second_card), [])
+        rule = LiveTagRule(
+            tag="expense", account_id=self.checking_id, record_id="settlement"
+        )
+        self.assertEqual(card_settlement_matches(records, [rule]), [])
 
 
 class LiveLabelTests(unittest.TestCase):

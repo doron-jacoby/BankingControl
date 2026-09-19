@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +24,7 @@ from finance.live import (
     LiveLabelRule,
     LiveTagRule,
     PDFExportError,
+    card_settlement_matches,
     general_category_trend,
     load_label_rules,
     load_snapshot,
@@ -79,6 +81,13 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Short Hebrew monthly spend-by-category trend and flagged charges",
     )
+    reconcile = commands.add_parser(
+        "reconcile",
+        help="Exclude card settlements that exactly equal a card's billed charges",
+    )
+    reconcile.add_argument(
+        "--apply", action="store_true", help="Save the exclusions (default: preview)"
+    )
     tag = commands.add_parser(
         "tag", help="Save a manual reconciliation rule for live records"
     )
@@ -91,9 +100,7 @@ def parser() -> argparse.ArgumentParser:
     )
     tag.add_argument("--category", help="Match Financy's category label")
     tag.add_argument("--subcategory", help="Match Financy's subcategory label")
-    tag.add_argument(
-        "--amount", help="Match Financy's exact signed amount, e.g. -700"
-    )
+    tag.add_argument("--amount", help="Match Financy's exact signed amount, e.g. -700")
     tag.add_argument(
         "--general-category",
         help="Report category for an expense rule, e.g. פנאי or אחר",
@@ -157,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.demo:
         return live_command(args, path)
     try:
-        if args.command in {"report", "tag", "tags"} or (
+        if args.command in {"report", "reconcile", "tag", "tags"} or (
             args.command == "sync" and (args.start or args.end)
         ):
             emit(
@@ -282,6 +289,66 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def reconcile_command(
+    args: argparse.Namespace,
+    path: Path,
+    store: MacOSKeychain,
+    snapshot: dict[str, Any],
+    rules: list[LiveTagRule],
+) -> int:
+    matches = card_settlement_matches(snapshot["records"], rules)
+    totals: dict[str, Decimal] = {}
+    for settlement, _ in matches:
+        currency = settlement["currency"]
+        totals[currency] = totals.get(currency, Decimal(0)) - Decimal(
+            settlement["amount"]
+        )
+    if args.apply:
+        with open_database(load_database_key(store), path) as db:
+            if load_tag_rules(db) != rules:
+                emit({"status": "failed", "message": "Rules changed; run it again."})
+                return 1
+            for settlement, charges in matches:
+                save_tag_rule(
+                    db,
+                    LiveTagRule(
+                        tag="self_transfer",
+                        account_id=settlement["account_id"],
+                        record_id=settlement["id"],
+                        priority=100,
+                        note=json.dumps(
+                            {
+                                "reason": "Exact card settlement match",
+                                "card_account": charges[0]["account_id"],
+                                "charge_day": settlement["day"],
+                                "amount": settlement["amount"],
+                                "card_charges": len(charges),
+                            }
+                        ),
+                    ),
+                )
+    emit(
+        {
+            "status": "applied" if args.apply else "preview",
+            "matches": len(matches),
+            "totals": {currency: str(total) for currency, total in totals.items()},
+            "settlements": [
+                {
+                    "day": settlement["day"],
+                    "amount": settlement["amount"],
+                    "currency": settlement["currency"],
+                    "card_charges": len(charges),
+                }
+                for settlement, charges in matches
+            ],
+            "message": "Excluded from spending."
+            if args.apply
+            else "Preview only; run with --apply to exclude them.",
+        }
+    )
+    return 0
+
+
 def live_command(args: argparse.Namespace, path: Path) -> int:
     command = args.command
     if command not in {
@@ -291,6 +358,7 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
         "sync",
         "monthly",
         "report",
+        "reconcile",
         "tag",
         "tags",
         "label",
@@ -299,7 +367,8 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
         emit(
             {
                 "status": "contract_incomplete",
-                "message": "Use sync, monthly, report, tag, tags, label or labels for "
+                "message": "Use sync, monthly, report, reconcile, tag, tags, label "
+                "or labels for "
                 "provisional live analysis. Reconciled expense totals and the live "
                 "worker remain unavailable.",
             }
@@ -309,7 +378,15 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
         store = MacOSKeychain()
         if command == "connect":
             emit(connect_interactively(store))
-        elif command in {"monthly", "report", "tag", "tags", "label", "labels"}:
+        elif command in {
+            "monthly",
+            "report",
+            "reconcile",
+            "tag",
+            "tags",
+            "label",
+            "labels",
+        }:
             if not path.exists():
                 emit({"status": "not_imported", "message": "Run finance sync first."})
                 return 1
@@ -382,6 +459,8 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                 with open_database(load_database_key(store), path) as db:
                     rules = load_tag_rules(db)
                     labels = load_label_rules(db)
+                if command == "reconcile":
+                    return reconcile_command(args, path, store, snapshot, rules)
                 if command == "monthly":
                     if args.timezone != "Asia/Jerusalem":
                         emit(
@@ -421,6 +500,9 @@ def live_command(args: argparse.Namespace, path: Path) -> int:
                             "analysis": "provisional",
                             "report": str(output),
                             "pdf": str(pdf),
+                            "card_settlements_to_reconcile": len(
+                                card_settlement_matches(snapshot["records"], rules)
+                            ),
                         }
                     )
         else:

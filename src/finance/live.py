@@ -244,6 +244,8 @@ class LiveRecord:
     installment_number: int | None = None
     installment_total: int | None = None
     purchase_day: str = ""
+    # Card rows only: the bank billing date, for matching checking-account settlements.
+    charge_day: str = ""
 
 
 def label(value: object, fallback: str = "UNCLASSIFIED") -> str:
@@ -631,6 +633,10 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             if installment and dates.get("transactionDate")
             else ""
         )
+        billed = dates.get("valueDate") or dates.get("bookingDate")
+        charge_day = (
+            _iso_day(billed) if account.account_type == "credit_card" and billed else ""
+        )
         category = row.get("changedCategory") or row.get("category") or {}
         recipient = row.get("creditorName")
         if recipient is None:
@@ -670,6 +676,7 @@ def normalize(row: dict[str, Any], account_map: dict[str, Account]) -> LiveRecor
             installment_number=installment[0] if installment else None,
             installment_total=installment[1] if installment else None,
             purchase_day=purchase_day,
+            charge_day=charge_day,
         )
     except (
         KeyError,
@@ -839,6 +846,67 @@ def _reconcile_reason(
     if amount < 0:
         return "expense", True
     return "unresolved_credit", False
+
+
+def card_settlement_matches(
+    records: Sequence[dict[str, Any]], rules: Sequence[LiveTagRule] = ()
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Untagged settlement debits that equal one card's charges on that billing day.
+
+    Only an exact, unambiguous match counts: one card group per settlement and
+    one settlement per group. The card's counted debits must cover it; refunds
+    awaiting review may be part of the group, uncounted debits may not.
+    """
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for record in records:
+        if record["account_type"] != "credit_card" or not record.get("charge_day"):
+            continue
+        amount = Decimal(record["amount"]) if record["amount"] is not None else None
+        if _reconcile_reason(record, amount, resolve_tag(record, rules))[0] == (
+            "fee_missing_amount"
+        ):
+            continue
+        key = (record["charge_day"], record["currency"], record["account_id"])
+        groups.setdefault(key, []).append(record)
+    candidates = []
+    with localcontext() as context:
+        context.prec = 400 + len(str(len(records)))
+        for settlement in records:
+            if (
+                settlement["subcategory"] != "CREDIT_CARD_CHECKING"
+                or settlement["status"] != "BOOKED"
+                or settlement["amount"] is None
+                or Decimal(settlement["amount"]) >= 0
+            ):
+                continue
+            found = [
+                key
+                for key, charges in groups.items()
+                if key[:2] == (settlement["day"], settlement["currency"])
+                and all(r["amount"] is not None for r in charges)
+                and sum(Decimal(r["amount"]) for r in charges)
+                == Decimal(settlement["amount"])
+            ]
+            if len(found) == 1:
+                candidates.append((settlement, found[0]))
+    used = Counter(key for _, key in candidates)
+    result = []
+    for settlement, key in candidates:
+        if used[key] != 1 or resolve_tag(settlement, rules) is not None:
+            continue
+        charges = groups[key]
+        covered = True
+        for record in charges:
+            amount = Decimal(record["amount"])
+            tag = resolve_tag(record, rules)
+            reason, included = _reconcile_reason(record, amount, tag)
+            if tag == "income" or not (
+                included or (amount > 0 and reason == "unresolved_credit")
+            ):
+                covered = False
+        if covered:
+            result.append((settlement, charges))
+    return sorted(result, key=lambda match: match[0]["day"])
 
 
 def _tokens(text: str) -> set[str]:

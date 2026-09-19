@@ -196,6 +196,16 @@ signed amount (a standing order with a fixed sum), and an `expense` rule may set
 `--general-category` to one of the report's categories or אחר, placing an
 identified bank transfer (a trip payment, an accountant's fee) in that column.
 
+Card settlements in the checking account otherwise count as "אשראי ללא פירוט"
+on top of the card's own itemized charges. `finance reconcile` previews the
+untagged settlement debits that exactly equal one card's charges billed on that
+day (the snapshot keeps each card row's billing date). Matches must be unique and
+exact to the agora. The card's counted debits must cover the settlement; refunds
+awaiting review may be in the group, uncounted debits may not.
+`finance reconcile --apply` saves them as record-specific `self_transfer` rules.
+`finance report` prints `card_settlements_to_reconcile`, so run the command
+after each sync while that number is above zero.
+
 Use the current month for the bundled demo. Monthly totals are separated by
 currency and use Asia/Jerusalem by default (`monthly --timezone UTC` is also
 supported). See the [synthetic audit report](docs/AUDIT_EXAMPLE.md) for exact
